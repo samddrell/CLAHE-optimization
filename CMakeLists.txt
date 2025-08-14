@@ -1,7 +1,32 @@
 cmake_minimum_required(VERSION 3.16)
 
-# Make sure nvcc is known BEFORE project()
-set(CMAKE_CUDA_COMPILER "/usr/local/cuda-11.4/bin/nvcc")
+# -------- Locate nvcc BEFORE project() (portable) --------
+# 1) Respect CUDACXX if set
+if(DEFINED ENV{CUDACXX} AND NOT DEFINED CMAKE_CUDA_COMPILER)
+  set(CMAKE_CUDA_COMPILER "$ENV{CUDACXX}" CACHE FILEPATH "nvcc from CUDACXX" FORCE)
+endif()
+
+# 2) Otherwise try to find nvcc on PATH or in common locations
+if(NOT DEFINED CMAKE_CUDA_COMPILER)
+  find_program(_NVCC nvcc
+    HINTS
+      /usr/local/cuda/bin
+      /usr/local/cuda-12.6/bin /usr/local/cuda-12.5/bin /usr/local/cuda-12.4/bin
+      /usr/local/cuda-12.3/bin /usr/local/cuda-12.2/bin /usr/local/cuda-12.1/bin
+      /usr/local/cuda-11.8/bin /usr/local/cuda-11.7/bin /usr/local/cuda-11.6/bin
+      /usr/local/cuda-11.5/bin /usr/local/cuda-11.4/bin
+      /opt/cuda/bin
+    PATHS ENV PATH)
+  if(_NVCC)
+    set(CMAKE_CUDA_COMPILER "${_NVCC}" CACHE FILEPATH "nvcc path" FORCE)
+  endif()
+endif()
+
+# If still not found, stop with a helpful message
+if(NOT DEFINED CMAKE_CUDA_COMPILER OR NOT EXISTS "${CMAKE_CUDA_COMPILER}")
+  message(FATAL_ERROR
+    "nvcc not found. Set env CUDACXX or pass -DCMAKE_CUDA_COMPILER=/full/path/to/nvcc")
+endif()
 
 project(CLAHE_CUDA_Project LANGUAGES CXX CUDA)
 
@@ -9,17 +34,38 @@ set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CUDA_STANDARD 14)
 
-# CMake 3.16 doesn't know CUDA_ARCHITECTURES; pass -gencode directly.
-set(CMAKE_CUDA_FLAGS "${CMAKE_CUDA_FLAGS} -gencode arch=compute_87,code=sm_87")
+# -------- GPU architecture selection (portable for 3.16) --------
+# Let users override at configure time: -DCUDA_ARCH_LIST="87" or "86;87" etc.
+# If empty, choose a sensible default per platform.
+set(CUDA_ARCH_LIST "" CACHE STRING "SM list (e.g. 72;75;86;87;89). Empty = auto.")
 
-# --- OpenCV / PNG / JPEG ---
+if(NOT CUDA_ARCH_LIST)
+  if(CMAKE_SYSTEM_PROCESSOR MATCHES "aarch64|ARM64")
+    # Jetson default (Orin). Set to 72 manually if building on Xavier/TX2.
+    set(CUDA_ARCH_LIST "87")
+  else()
+    # Desktop default (Ampere). Override to 89 for RTX 4090 if your toolkit supports it.
+    set(CUDA_ARCH_LIST "86")
+  endif()
+endif()
+
+# Apply arch flags: generate fatbin for each entry (CMake 3.16 path)
+foreach(arch ${CUDA_ARCH_LIST})
+  set(CMAKE_CUDA_FLAGS "${CMAKE_CUDA_FLAGS} -gencode arch=compute_${arch},code=sm_${arch}")
+endforeach()
+
+# -------- Dependencies: OpenCV, PNG, JPEG --------
 find_package(OpenCV QUIET COMPONENTS core imgproc highgui imgcodecs videoio)
 
 find_package(PkgConfig REQUIRED)
 if(NOT OpenCV_FOUND)
   pkg_check_modules(OpenCV REQUIRED opencv4)
 endif()
-pkg_check_modules(PNG  REQUIRED libpng)
+# PNG may appear as libpng or libpng16 depending on distro
+pkg_check_modules(PNG QUIET libpng)
+if(NOT PNG_FOUND)
+  pkg_check_modules(PNG REQUIRED libpng16)
+endif()
 pkg_check_modules(JPEG REQUIRED libjpeg)
 
 add_executable(test
@@ -28,16 +74,19 @@ add_executable(test
   cuda_clahe.cu
 )
 
-# Includes
+# -------- Derive CUDA include/lib from nvcc path (no hard-coded version) --------
+get_filename_component(_CUDA_BIN_DIR "${CMAKE_CUDA_COMPILER}" DIRECTORY)
+get_filename_component(CUDA_ROOT "${_CUDA_BIN_DIR}/.." REALPATH)
+
 target_include_directories(test PRIVATE
   ${CMAKE_CURRENT_SOURCE_DIR}
-  /usr/local/cuda-11.4/include
+  ${CUDA_ROOT}/include
   ${OpenCV_INCLUDE_DIRS}
   ${PNG_INCLUDE_DIRS}
   ${JPEG_INCLUDE_DIRS}
 )
 
-# Extra cflags (only if provided by pkg-config)
+# Extra cflags from pkg-config (if present)
 if(OpenCV_CFLAGS_OTHER)
   target_compile_options(test PRIVATE ${OpenCV_CFLAGS_OTHER})
 endif()
@@ -48,9 +97,9 @@ if(JPEG_CFLAGS_OTHER)
   target_compile_options(test PRIVATE ${JPEG_CFLAGS_OTHER})
 endif()
 
-# CUDA libs (manual, since we aren't using CUDAToolkit package)
+# Link cudart without hard-coded lib path (but add it if needed)
 target_link_directories(test PRIVATE
-  /usr/local/cuda-11.4/lib64
+  ${CUDA_ROOT}/lib64
 )
 target_link_libraries(test PRIVATE
   cudart
@@ -60,5 +109,7 @@ target_link_libraries(test PRIVATE
 )
 
 message(STATUS "nvcc: ${CMAKE_CUDA_COMPILER}")
+message(STATUS "CUDA root: ${CUDA_ROOT}")
+message(STATUS "CUDA arch list: ${CUDA_ARCH_LIST}")
 message(STATUS "OpenCV include: ${OpenCV_INCLUDE_DIRS}")
 message(STATUS "OpenCV libs: ${OpenCV_LIBRARIES}")
