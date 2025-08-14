@@ -11,7 +11,7 @@ int main()
     // Prepare CUDA CLAHE Images
     // Read in image data from a file
     std::string inFilePath = "p_00000009.png"; // Change this to your image file path
-    std::string inFilePathSmall = "/DSC04441.jpg";
+    std::string inFilePathSmall = "DSC04441.jpg";
     Image smallImage;
     if (!(smallImage.OpenFile(inFilePathSmall))) 
     {
@@ -59,11 +59,13 @@ int main()
     img.CLAHE(4,16);
     bigImage.CLAHE(4,16);
     extraBigImage.CLAHE(4,16);
+    // extraBigImage.SaveFile(ouFilePath3,100);
 
     smallImageCPU.cpuCLAHE(4,16);
     imgCPU.cpuCLAHE(4,16);
     bigImageCPU.cpuCLAHE(4,16);
     extraBigImageCPU.cpuCLAHE(4,16);
+    // extraBigImageCPU.SaveFile(ouFilePath3cpu,100);
     // img.CLAHE(1,8);
     // img.CLAHE(1,8);
     // img.CLAHE(1,8);

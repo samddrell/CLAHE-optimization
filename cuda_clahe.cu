@@ -153,15 +153,6 @@ int CLAHE_8u(unsigned char *input, unsigned char *output,
         return -1;
     }
 
-    
-    // Launch some kernel or perform asynchronous operations here...
-    cudaEventRecord(stop, 0); // Record the stop event
-    cudaEventSynchronize(stop); // Ensure the stop event has been recorded
-    float elapsedTime;
-    cudaEventElapsedTime(&elapsedTime, start, stop);
-    printf("CUDA Elapsed time: %f ms\n", elapsedTime);
-    cudaEventDestroy(start);
-    cudaEventDestroy(stop);
 
     // ----------------------------------------------------------------------------
     // Launch Kernel 2: applyCLAHE
@@ -206,6 +197,15 @@ int CLAHE_8u(unsigned char *input, unsigned char *output,
     cudaFree(d_input);
     cudaFree(d_output);
     cudaFree(d_tileLUT);
+
+    // Launch some kernel or perform asynchronous operations here...
+    cudaEventRecord(stop, 0); // Record the stop event
+    cudaEventSynchronize(stop); // Ensure the stop event has been recorded
+    float elapsedTime;
+    cudaEventElapsedTime(&elapsedTime, start, stop);
+    printf("CUDA Elapsed time: %f ms\n", elapsedTime);
+    cudaEventDestroy(start);
+    cudaEventDestroy(stop);
 
     // Return 0 on success.
     return 0;
