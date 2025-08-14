@@ -1,64 +1,64 @@
-cmake_minimum_required(VERSION 3.18)
+cmake_minimum_required(VERSION 3.16)
+
+# Make sure nvcc is known BEFORE project()
+set(CMAKE_CUDA_COMPILER "/usr/local/cuda-11.4/bin/nvcc")
+
 project(CLAHE_CUDA_Project LANGUAGES CXX CUDA)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
+set(CMAKE_CUDA_STANDARD 14)
 
-# Manually specify OpenCV paths
-set(OpenCV_INCLUDE_DIRS /usr/include/opencv4)
-set(OpenCV_LIBRARIES
-    opencv_core
-    opencv_imgproc
-    opencv_highgui
-    opencv_imgcodecs
-    opencv_videoio
-)
+# CMake 3.16 doesn't know CUDA_ARCHITECTURES; pass -gencode directly.
+set(CMAKE_CUDA_FLAGS "${CMAKE_CUDA_FLAGS} -gencode arch=compute_87,code=sm_87")
 
+# --- OpenCV / PNG / JPEG ---
+find_package(OpenCV QUIET COMPONENTS core imgproc highgui imgcodecs videoio)
 
-
-# Your external projects directory
-# set(ENGINEERING_PROJECTS_DIR "/home/samddrell/sam-1/Engineering Projects")
-
-# For libpng and jpeg
 find_package(PkgConfig REQUIRED)
-pkg_check_modules(PNG REQUIRED libpng)
+if(NOT OpenCV_FOUND)
+  pkg_check_modules(OpenCV REQUIRED opencv4)
+endif()
+pkg_check_modules(PNG  REQUIRED libpng)
 pkg_check_modules(JPEG REQUIRED libjpeg)
-# pkg_check_modules(OpenCV REQUIRED opencv4)
 
-# Executable target (this is your main program)
 add_executable(test
-    test.cpp       # Replace this with your actual main .cpp file
-    image.cpp      # Include source file for your image class
-    cuda_clahe.cu  # Include your CUDA kernel file
+  test.cpp
+  image.cpp
+  cuda_clahe.cu
 )
 
-# Optional CUDA properties
-set_target_properties(test PROPERTIES
-    CUDA_SEPARABLE_COMPILATION ON
-    CUDA_ARCHITECTURES 86
-)
-
-# Find CUDA toolkit (includes cuda_runtime.h and friends)
-find_package(CUDAToolkit REQUIRED)
-
-# Include directories
+# Includes
 target_include_directories(test PRIVATE
-    # "${ENGINEERING_PROJECTS_DIR}/real_time_ml_streaming/src"  # for image.h
-    "${CMAKE_CURRENT_SOURCE_DIR}"                             # for cuda_clahe.h
-    ${PNG_INCLUDE_DIRS}
-    ${OpenCV_INCLUDE_DIRS}
+  ${CMAKE_CURRENT_SOURCE_DIR}
+  /usr/local/cuda-11.4/include
+  ${OpenCV_INCLUDE_DIRS}
+  ${PNG_INCLUDE_DIRS}
+  ${JPEG_INCLUDE_DIRS}
 )
 
-target_compile_options(test PRIVATE ${OpenCV_CFLAGS_OTHER})
+# Extra cflags (only if provided by pkg-config)
+if(OpenCV_CFLAGS_OTHER)
+  target_compile_options(test PRIVATE ${OpenCV_CFLAGS_OTHER})
+endif()
+if(PNG_CFLAGS_OTHER)
+  target_compile_options(test PRIVATE ${PNG_CFLAGS_OTHER})
+endif()
+if(JPEG_CFLAGS_OTHER)
+  target_compile_options(test PRIVATE ${JPEG_CFLAGS_OTHER})
+endif()
 
-# Link against the CUDA runtime
-target_link_libraries(test PRIVATE 
-    CUDA::cudart
-    ${PNG_LIBRARIES}
-    ${JPEG_LIBRARIES}
-    ${OpenCV_LIBRARIES}
-
+# CUDA libs (manual, since we aren't using CUDAToolkit package)
+target_link_directories(test PRIVATE
+  /usr/local/cuda-11.4/lib64
+)
+target_link_libraries(test PRIVATE
+  cudart
+  ${OpenCV_LIBRARIES}
+  ${PNG_LIBRARIES}
+  ${JPEG_LIBRARIES}
 )
 
-# print what CMake is seeing
-message(STATUS "OpenCV include dirs: ${OpenCV_INCLUDE_DIRS}")
+message(STATUS "nvcc: ${CMAKE_CUDA_COMPILER}")
+message(STATUS "OpenCV include: ${OpenCV_INCLUDE_DIRS}")
+message(STATUS "OpenCV libs: ${OpenCV_LIBRARIES}")
