@@ -46,20 +46,47 @@ namespace Cuda
 // ----------------------------------------------------------------------------
 // Device Kernels Declarations (assumed to be implemented elsewhere)
 // ----------------------------------------------------------------------------
-__global__ void computeTileLUT(const unsigned char* input, int width, int height,
+__global__ void computeTileLUT(const unsigned char* __restrict__ input, 
+                               int width, int height,
                                int tileSize, int clipLimit,
-                               unsigned char* tileLUT,
+                               unsigned char* __restrict__ tileLUT,
                                int tilesX, int tilesY);
 
-__global__ void applyCLAHE(const unsigned char* input, unsigned char* output,
+__global__ void fasterComputeTileLUT_opt(const unsigned char* __restrict__ input,
+                                   int width, int height,
+                                   int tileSize, int clipLimit,
+                                   unsigned char* __restrict__ tileLUT,
+                                   int tilesX, int tilesY);
+
+__global__ void applyCLAHE(const unsigned char* __restrict__ input, 
+                           unsigned char* __restrict__ output,
                            int width, int height, int tileSize,
                            int tilesX, int tilesY,
-                           const unsigned char* tileLUT);
+                           const unsigned char* __restrict__ tileLUT);
+
+__global__ void test_A(const unsigned char*  input, 
+                       int width, int height,
+                       int tileSize, int clipLimit,
+                       unsigned char*  tileLUT,
+                       int tilesX, int tilesY);
+
+__global__ void test_C(const unsigned char*  input, 
+                       int width, int height,
+                       int tileSize, int clipLimit,
+                       unsigned char*  tileLUT,
+                       int tilesX, int tilesY);
+
+__global__ void hist_vec_warpagg(const unsigned char* __restrict__ input,
+                                 int width, int height,
+                                 int tileSize, int clipLimit,
+                                 unsigned char* __restrict__ tileLUT,
+                                 int tilesX, int tilesY);
+
 
 // ----------------------------------------------------------------------------
 // Host function: CLAHE_8u
 // ----------------------------------------------------------------------------
-int CLAHE_8u(unsigned char *input, unsigned char *output,
+int CLAHE_8u(unsigned char* __restrict__ input, unsigned char* __restrict__ output,
              int width, int height, int clipLimit, int tileSize)
 {
     cudaError_t err;
@@ -129,11 +156,27 @@ int CLAHE_8u(unsigned char *input, unsigned char *output,
     // Launch Kernel 1: computeTileLUT
     // ----------------------------------------------------------------------------
     // For example, use a 16x16 block; each block processes one tile.
-    dim3 blockTile(16, 16);
+    dim3 blockTile(16,16);                 // 256 threads = 8 warps
     dim3 gridTile(tilesX, tilesY);
-    computeTileLUT<<<gridTile, blockTile>>>(d_input, width, height,
-                                            tileSize, effectiveClipLimit,
-                                            d_tileLUT, tilesX, tilesY);
+
+    hist_vec_warpagg<<<gridTile, blockTile>>>(d_input, width, height,
+                                        tileSize, effectiveClipLimit,
+                                        d_tileLUT, tilesX, tilesY);
+
+
+    // ----------------------------------------------------------------------------
+    // Histogram per warp kernal launch code
+
+    // int tpb   = blockTile.x * blockTile.y;
+    // int warps = tpb / 32;                  // requires multiple of 32
+    // size_t shmem = (warps * HIST_SIZE + HIST_SIZE) * sizeof(unsigned int);
+    // //            ^ per-warp hist + final hist
+
+    // fasterComputeTileLUT_opt<<<gridTile, blockTile, shmem>>>(
+    //     d_input, width, height, tileSize, effectiveClipLimit,
+    //     d_tileLUT, tilesX, tilesY);
+    // ----------------------------------------------------------------------------
+
     err = cudaGetLastError();
     if (err != cudaSuccess) {
         fprintf(stderr, "computeTileLUT kernel launch failed: %s\n", cudaGetErrorString(err));
@@ -214,9 +257,10 @@ int CLAHE_8u(unsigned char *input, unsigned char *output,
 
 
 // This kernel is launched with one block per tile.
-__global__ void computeTileLUT(const unsigned char* input, int width, int height,
+__global__ void computeTileLUT(const unsigned char* __restrict__ input, 
+                               int width, int height,
                                int tileSize, int clipLimit,
-                               unsigned char* tileLUT,
+                               unsigned char* __restrict__ tileLUT,
                                int tilesX, int tilesY)
 {
     // Determine which tile we are processing.
@@ -299,11 +343,325 @@ __global__ void computeTileLUT(const unsigned char* input, int width, int height
     }
 }
 
+// This kernel is launched with one block per tile.
+#ifndef HIST_SIZE
+#define HIST_SIZE 256
+#endif
 
-__global__ void applyCLAHE(const unsigned char* input, unsigned char* output,
+__global__ void test_A(const unsigned char*  input, 
+                       int width, int height,
+                       int tileSize, int clipLimit,
+                       unsigned char*  tileLUT,
+                       int tilesX, int tilesY)
+{
+    const int tileX = blockIdx.x, tileY = blockIdx.y;
+    const int tileIndex = tileY * tilesX + tileX;
+
+    const int startX = tileX * tileSize;
+    const int startY = tileY * tileSize;
+    const int endX   = min(startX + tileSize, width);
+    const int endY   = min(startY + tileSize, height);
+
+    __shared__ __align__(128) unsigned int hist[HIST_SIZE];
+
+    // zero with ALL threads
+    const int tpb = blockDim.x * blockDim.y;
+    const int tid = threadIdx.y * blockDim.x + threadIdx.x;
+    for (int i = tid; i < HIST_SIZE; i += tpb) hist[i] = 0;
+    __syncthreads();
+
+    const int lane = tid & 31;
+
+    for (int y = startY + threadIdx.y; y < endY; y += blockDim.y) {
+        for (int x = startX + threadIdx.x; x < endX; x += blockDim.x) {
+            const int idx = y * width + x;
+            const unsigned int pix = input[idx];
+
+            // Use only active lanes in this iteration
+            unsigned m = __match_any_sync(__activemask(), pix);
+            int leader = __ffs(m) - 1;      // 0..31
+            if (lane == leader) {
+                int votes = __popc(m);
+                atomicAdd(&hist[pix], votes);
+            }
+        }
+    }
+    __syncthreads();
+
+    // Clip + redistribute
+    if (tid == 0) {
+        int totalExcess = 0;
+        for (int i = 0; i < HIST_SIZE; ++i) {
+            int v = (int)hist[i];
+            if (v > clipLimit) {
+                totalExcess += (v - clipLimit);
+                hist[i] = clipLimit;
+            }
+        }
+        const int distribute = totalExcess / HIST_SIZE;
+        for (int i = 0; i < HIST_SIZE; ++i) hist[i] += distribute;
+
+        // CDF + LUT
+        int cdf = 0, cdfMin = -1;
+        const int numPixels = (endX - startX) * (endY - startY);
+        for (int i = 0; i < HIST_SIZE; ++i) {
+            cdf += hist[i];
+            if (cdfMin < 0 && cdf) cdfMin = cdf;
+            tileLUT[tileIndex * HIST_SIZE + i] =
+                (unsigned char)(((cdf - cdfMin) * 255) / max(numPixels - cdfMin, 1));
+        }
+    }
+}
+
+__global__ void test_C(const unsigned char*  input, 
+                       int width, int height,
+                       int tileSize, int clipLimit,
+                       unsigned char*  tileLUT,
+                       int tilesX, int tilesY)
+{
+    const int tileX = blockIdx.x, tileY = blockIdx.y;
+    const int tileIndex = tileY * tilesX + tileX;
+
+    const int startX = tileX * tileSize;
+    const int startY = tileY * tileSize;
+    const int endX   = min(startX + tileSize, width);
+    const int endY   = min(startY + tileSize, height);
+
+    __shared__ __align__(128) unsigned int hist[HIST_SIZE];
+
+    const int tpb = blockDim.x * blockDim.y;
+    const int tid = threadIdx.y * blockDim.x + threadIdx.x;
+    for (int i = tid; i < HIST_SIZE; i += tpb) hist[i] = 0;
+    __syncthreads();
+
+    // Vectorized over X: 4 pixels per thread
+    for (int y = startY + threadIdx.y; y < endY; y += blockDim.y) {
+        int x = startX + (threadIdx.x << 2);  // *4
+
+        // fast path: 4 at a time (ensure we stay inside)
+        for (; x + 3 < endX; x += (blockDim.x << 2)) {
+            const uchar4 v = *reinterpret_cast<const uchar4*>(input + y*width + x);
+            atomicAdd(&hist[v.x], 1u);
+            atomicAdd(&hist[v.y], 1u);
+            atomicAdd(&hist[v.z], 1u);
+            atomicAdd(&hist[v.w], 1u);
+        }
+
+        // tail (0..3 pixels)
+        for (; x < endX; ++x) {
+            unsigned char pix = input[y*width + x];
+            atomicAdd(&hist[pix], 1u);
+        }
+    }
+    __syncthreads();
+
+    // Clip + redistribute + CDF + LUT (same as A)
+    if (tid == 0) {
+        int totalExcess = 0;
+        for (int i = 0; i < HIST_SIZE; ++i) {
+            int v = (int)hist[i];
+            if (v > clipLimit) { totalExcess += (v - clipLimit); hist[i] = clipLimit; }
+        }
+        const int distribute = totalExcess / HIST_SIZE;
+        for (int i = 0; i < HIST_SIZE; ++i) hist[i] += distribute;
+
+        int cdf = 0, cdfMin = -1;
+        const int numPixels = (endX - startX) * (endY - startY);
+        for (int i = 0; i < HIST_SIZE; ++i) {
+            cdf += hist[i];
+            if (cdfMin < 0 && cdf) cdfMin = cdf;
+            tileLUT[tileIndex * HIST_SIZE + i] =
+                (unsigned char)(((cdf - cdfMin) * 255) / max(numPixels - cdfMin, 1));
+        }
+    }
+}
+
+#ifndef HIST_SIZE
+#define HIST_SIZE 256
+#endif
+
+// One tile per block. Works for sm_70+ (uses __match_any_sync).
+__global__ void hist_vec_warpagg(const unsigned char* __restrict__ input,
+                                 int width, int height,
+                                 int tileSize, int clipLimit,
+                                 unsigned char* __restrict__ tileLUT,
+                                 int tilesX, int tilesY)
+{
+    const int tileX = blockIdx.x, tileY = blockIdx.y;
+    const int tileIndex = tileY * tilesX + tileX;
+
+    const int startX = tileX * tileSize;
+    const int startY = tileY * tileSize;
+    const int endX   = min(startX + tileSize, width);
+    const int endY   = min(startY + tileSize, height);
+
+    // Shared histogram (aligned to reduce bank conflicts)
+    __shared__ __align__(128) unsigned int hist[HIST_SIZE];
+
+    const int bx = blockDim.x, by = blockDim.y;
+    const int tpb = bx * by;
+    const int tid = threadIdx.y * bx + threadIdx.x;
+    const int lane = tid & 31;
+
+    // Zero with all threads
+    for (int i = tid; i < HIST_SIZE; i += tpb) hist[i] = 0;
+    __syncthreads();
+
+    // Prologue: walk to 4-byte alignment for vector loads
+    for (int y = startY + threadIdx.y; y < endY; y += by) {
+        int x = startX + threadIdx.x;
+
+        // Scalar until pointer is 4-byte aligned or we run out
+        for (; x < endX && ((y * width + x) & 3); x += bx) {
+            const unsigned char pix = input[y * width + x];
+            unsigned m = __match_any_sync(__activemask(), (unsigned)pix);
+            int leader = __ffs(m) - 1;
+            if (lane == leader) atomicAdd(&hist[pix], __popc(m));
+        }
+
+        // Vectorized body: uchar4 per iteration
+        for (; x + 3 < endX; x += (bx << 2)) {
+            const int base = y * width + x;
+            // Safe on modern GPUs; if you want to be strict about alignment, guard with ((base & 3) == 0)
+            const uchar4 v = *reinterpret_cast<const uchar4*>(input + base);
+
+            // Warp-aggregated atomics: do it 4 times (one per byte)
+            auto update = [&](unsigned p) {
+                unsigned m = __match_any_sync(__activemask(), p);
+                int leader = __ffs(m) - 1;
+                if (lane == leader) atomicAdd(&hist[p], __popc(m));
+            };
+            update((unsigned)v.x);
+            update((unsigned)v.y);
+            update((unsigned)v.z);
+            update((unsigned)v.w);
+        }
+
+        // Tail (0..3 pixels)
+        for (; x < endX; x += bx) {
+            const unsigned char pix = input[y * width + x];
+            unsigned m = __match_any_sync(__activemask(), (unsigned)pix);
+            int leader = __ffs(m) - 1;
+            if (lane == leader) atomicAdd(&hist[pix], __popc(m));
+        }
+    }
+    __syncthreads();
+
+    // Clip + redistribute + CDF + LUT (single thread; cheap for 256 bins)
+    if (tid == 0) {
+        int totalExcess = 0;
+        for (int i = 0; i < HIST_SIZE; ++i) {
+            int v = (int)hist[i];
+            if (v > clipLimit) { totalExcess += (v - clipLimit); hist[i] = clipLimit; }
+        }
+        const int distribute = totalExcess / HIST_SIZE;
+        for (int i = 0; i < HIST_SIZE; ++i) hist[i] += distribute;
+
+        int cdf = 0, cdfMin = -1;
+        const int numPixels = (endX - startX) * (endY - startY);
+        for (int i = 0; i < HIST_SIZE; ++i) {
+            cdf += hist[i];
+            if (cdfMin < 0 && cdf) cdfMin = cdf;
+            tileLUT[tileIndex * HIST_SIZE + i] =
+                (unsigned char)(((cdf - cdfMin) * 255) / max(numPixels - cdfMin, 1));
+        }
+    }
+}
+
+
+#ifndef HIST_SIZE
+#define HIST_SIZE 256
+#endif
+
+// One tile per block; blockDim.x * blockDim.y must be a multiple of 32
+__global__ void fasterComputeTileLUT_opt(const unsigned char* __restrict__ input,
+                                   int width, int height,
+                                   int tileSize, int clipLimit,
+                                   unsigned char* __restrict__ tileLUT,
+                                   int tilesX, int tilesY)
+{
+    // Which tile does this block handle?
+    const int tileX = blockIdx.x, tileY = blockIdx.y;
+    const int tileIndex = tileY * tilesX + tileX;
+
+    // Tile bounds
+    const int startX = tileX * tileSize;
+    const int startY = tileY * tileSize;
+    const int endX   = min(startX + tileSize, width);
+    const int endY   = min(startY + tileSize, height);
+
+    // Thread ids
+    const int tpb  = blockDim.x * blockDim.y;             // threads per block
+    const int tid  = threadIdx.y * blockDim.x + threadIdx.x;
+    const int warp = tid >> 5;                             // /32
+    const int WARPS_PER_BLOCK = tpb >> 5;
+
+    // Shared memory layout: [ warpHists (WARPS×256) | finalHist (256) ]
+    extern __shared__ unsigned int s[];
+    unsigned int* warpHists = s;                           // WARPS_PER_BLOCK * HIST_SIZE
+    unsigned int* finalHist = warpHists + WARPS_PER_BLOCK * HIST_SIZE;
+
+    // Zero all shared memory (use ALL threads, striding)
+    for (int i = tid; i < WARPS_PER_BLOCK * HIST_SIZE + HIST_SIZE; i += tpb)
+        s[i] = 0;
+    __syncthreads();
+
+    // Each warp updates its own histogram -> far fewer collisions
+    unsigned int* myHist = warpHists + warp * HIST_SIZE;
+
+    // Accumulate tile histogram
+    for (int y = startY + threadIdx.y; y < endY; y += blockDim.y) {
+        for (int x = startX + threadIdx.x; x < endX; x += blockDim.x) {
+            int idx = y * width + x;                      
+            unsigned char pix = input[idx];
+            atomicAdd(&myHist[pix], 1u);
+        }
+    }
+    __syncthreads();
+
+    // Reduce per-warp histograms -> finalHist
+    for (int bin = tid; bin < HIST_SIZE; bin += tpb) {
+        unsigned int sum = 0;
+        #pragma unroll
+        for (int w = 0; w < WARPS_PER_BLOCK; ++w)
+            sum += warpHists[w * HIST_SIZE + bin];
+        finalHist[bin] = sum;
+    }
+    __syncthreads();
+
+    // Clip + redistribute + CDF + LUT (single thread; cheap for 256 bins)
+    if (tid == 0) {
+        int totalExcess = 0;
+        for (int i = 0; i < HIST_SIZE; ++i) {
+            int v = (int)finalHist[i];
+            if (v > clipLimit) {
+                totalExcess += (v - clipLimit);
+                finalHist[i] = clipLimit;
+            }
+        }
+        const int distribute = totalExcess / HIST_SIZE;
+        for (int i = 0; i < HIST_SIZE; ++i)
+            finalHist[i] += distribute;
+
+        // CDF
+        int cdf = 0, cdfMin = -1;
+        for (int i = 0; i < HIST_SIZE; ++i) {
+            cdf += finalHist[i];
+            if (cdfMin < 0 && cdf) cdfMin = cdf;
+            int numPixels = (endX - startX) * (endY - startY);
+            // map into [0,255]
+            tileLUT[tileIndex * HIST_SIZE + i] =
+                (unsigned char)(((cdf - cdfMin) * 255) / max(numPixels - cdfMin, 1));
+        }
+    }
+}
+
+
+__global__ void applyCLAHE(const unsigned char* __restrict__ input, 
+                           unsigned char* __restrict__ output,
                            int width, int height, int tileSize,
                            int tilesX, int tilesY,
-                           const unsigned char* tileLUT)
+                           const unsigned char* __restrict__ tileLUT)
 {
     int x = blockIdx.x * blockDim.x + threadIdx.x;
     int y = blockIdx.y * blockDim.y + threadIdx.y;

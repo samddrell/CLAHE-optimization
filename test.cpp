@@ -75,73 +75,21 @@ int main()
     // img.CLAHE(4,32);
 
     // CANNY Edge Detection
-    std::string ouFilePathCANNY = "canny_applied.png";
+    // std::string ouFilePathCANNY = "canny_applied.png";
 
-    Image cannyImg;
-    if (!(cannyImg.OpenFile(inFilePathSmall))) 
-    {
-        printf("Failed to open image file: %s\n", inFilePathSmall.c_str());
-        return 1; // Exit if the image cannot be opened
-    }
-    cannyImg.cpuCANNY();
-    // Save CUDA CLAHE Images
-    if (!(cannyImg.SaveFile(ouFilePathCANNY))) 
-    {
-        printf("Failed to save image file: %s\n", ouFilePath4.c_str());
-        return 1; // Exit if the image cannot be saved
-    }
-
-    // cudaEventRecord(stop);
-
-    // cudaEventSynchronize(stop);
-    float ms = 0;
-    // cudaEventElapsedTime(&ms, start, stop);
-    // printf("GPU CLAHE took %f ms to process %d x %d image\n", ms, img.m_width, img.m_height);
-
-    // Save CUDA CLAHE Images
-    // if (!(smallImage.SaveFile(ouFilePath4))) 
+    // Image cannyImg;
+    // if (!(cannyImg.OpenFile(inFilePathSmall))) 
+    // {
+    //     printf("Failed to open image file: %s\n", inFilePathSmall.c_str());
+    //     return 1; // Exit if the image cannot be opened
+    // }
+    // cannyImg.cpuCANNY();
+    // // Save CUDA CLAHE Images
+    // if (!(cannyImg.SaveFile(ouFilePathCANNY))) 
     // {
     //     printf("Failed to save image file: %s\n", ouFilePath4.c_str());
     //     return 1; // Exit if the image cannot be saved
     // }
-    // if (!(img.SaveFile(ouFilePath1))) 
-    // {
-    //     printf("Failed to save image file: %s\n", ouFilePath1.c_str());
-    //     return 1; // Exit if the image cannot be saved
-    // }
-    // if (!(bigImage.SaveFile(ouFilePath2))) 
-    // {
-    //     printf("Failed to save image file: %s\n", ouFilePath2.c_str());
-    //     return 1; // Exit if the image cannot be saved
-    // }
-    // if (!(bigImage.SaveFile(ouFilePath3))) 
-    // {
-    //     printf("Failed to save image file: %s\n", ouFilePath3.c_str());
-    //     return 1; // Exit if the image cannot be saved
-    // }
-
-    // Save CPU CLAHE Images
-    // if (!(smallImageCPU.SaveFile(ouFilePath4cpu))) 
-    // {
-    //     printf("Failed to save image file: %s\n", ouFilePath4cpu.c_str());
-    //     return 1; // Exit if the image cannot be saved
-    // }
-    // if (!(imgCPU.SaveFile(ouFilePath1cpu))) 
-    // {
-    //     printf("Failed to save image file: %s\n", ouFilePath1.c_str());
-    //     return 1; // Exit if the image cannot be saved
-    // }
-    // if (!(bigImageCPU.SaveFile(ouFilePath2cpu))) 
-    // {
-    //     printf("Failed to save image file: %s\n", ouFilePath2.c_str());
-    //     return 1; // Exit if the image cannot be saved
-    // }
-    // if (!(extraBigImageCPU.SaveFile(ouFilePath3cpu))) 
-    // {
-    //     printf("Failed to save image file: %s\n", ouFilePath3.c_str());
-    //     return 1; // Exit if the image cannot be saved
-    // }
-
 
     return 0;
 }
