@@ -28,7 +28,7 @@ This project benchmarks a CUDA implementation of CLAHE to:
 - **compare** against OpenCV’s CPU CLAHE,
 - and **explore kernel-level optimizations** to understand whether high-end hardware costs are justified by measurable latency improvements.
 
-### Why CUDA CLAHE?
+#### Why CUDA CLAHE?
 CLAHE boosts local contrast without over-amplifying noise. A CUDA path enables near-interactive viewing on supported devices.
 
 ---
@@ -73,82 +73,89 @@ cmake ..           # add -DCMAKE_BUILD_TYPE=Release for optimized builds
 cmake --build . -j
 ```
 
-##############################################################################
-# Below This line has not been formatted
-##############################################################################
-Run
+### Run
+```bash
+
 ./test
 # The binary prints four CUDA timings (in ms) and four CPU timings (in µs) per run.
+```
 
-Part 1 — Device benchmarking
+---
+
+## Part 1 — Device benchmarking
 
 We compare four devices:
 
-Jetson AGX Orin
+- Jetson AGX Orin
 
-Jetson Orin Nano
+- Jetson Orin Nano
 
-RTX 4090
+- RTX 4090
 
-RTX 2000 Ada
+- RTX 2000 Ada
 
 We also include OpenCV CPU timings for reference.
 
-Threading
+### Threading
 
 CPU path uses OpenCV’s implementation (multi-threading depends on your OpenCV build and OMP/TBB).
 
 CUDA path uses one block per tile; kernel configuration explained below.
 
-Insert your summary table (replace “—” with your values or link a CSV):
+_Insert your summary table (replace “—” with your values or link a CSV):_
 
-Device	CUDA Time @ Size A	CUDA Time @ Size B	CUDA Time @ Size C	CUDA Time @ Size D	OpenCV CPU (ms)
+_Device	CUDA Time @ Size A	CUDA Time @ Size B	CUDA Time @ Size C	CUDA Time @ Size D	OpenCV CPU (ms)
 Jetson AGX Orin	—	—	—	—	—
 Jetson Orin Nano	—	—	—	—	—
 RTX 4090	—	—	—	—	—
-RTX 2000 Ada	—	—	—	—	—
+RTX 2000 Ada	—	—	—	—	—_
 
-If you keep your raw numbers in a CSV, link it here:
-See: docs/data/benchmarks.csv
+_If you keep your raw numbers in a CSV, link it here:
+See: docs/data/benchmarks.csv_
 
-Part 2 — Optimization experiments
+---
 
-All optimizations below were prototype kernels generated/assisted with AI to explore directions—not drop-in production code. Several trade-offs and bugs were found (details below).
 
-Summary (% change vs. your baseline):
+## Part 2 — Optimization experiments
 
-Histogram Per Warp: −5.8% (slower)
+_All optimizations below were prototype kernels generated/assisted with AI to explore directions—not drop-in production code. Several trade-offs and bugs were found (details below)._
+
+### Summary (% change vs. your baseline):
+
+- **Histogram Per Warp: −5.8%** (slower)
 Likely due to extra shared-mem footprint and reduction overhead outweighing fewer collisions.
 
-__restrict__ qualifiers: +4.8%
+- **__restrict__ qualifiers:** +4.8%
 Helps the compiler generate better memory code when aliasing is removed.
 
-Minimizing atomics (warp-aggregated updates): +11.9%
+- ** Minimizing atomics (warp-aggregated updates):** +11.9%
 Reduced contention can help—but note a color inversion bug was observed (LUT mapping issue).
 
-Vectorized loads (uchar4): +11.2%
+- **Vectorized loads (uchar4):** +11.2%
 Better global load efficiency—but again a color inversion bug noted (alignment/mapping mistake).
 
-All three combined: +5.4%
+- **All three combined:** +5.4%
 Gains did not add linearly; register pressure, shared-mem usage, and control overhead can interact.
 
-Why combined can be worse than parts
+### Why combined can be worse than parts
 
-Register pressure increases with more logic → lower occupancy.
+- **Register pressure** increases with more logic → lower occupancy.
 
-Shared memory grows (per-warp histograms) → fewer concurrent blocks.
+- **Shared memory grows** (per-warp histograms) → fewer concurrent blocks.
 
-Instruction mix: shuffle/match/reduction + vectorization + extra blending math may stall pipelines.
+- **Instruction mix:** shuffle/match/reduction + vectorization + extra blending math may stall pipelines.
 
-Contention pattern: some techniques reduce atomics in one phase but introduce reductions later.
+- **Contention pattern:** some techniques reduce atomics in one phase but introduce reductions later.
 
-Bugs (e.g., inverted mapping) can force extra fix-up passes.
+- **Bugs** (e.g., inverted mapping) can force extra fix-up passes.
 
-Results gallery
+---
 
-Replace with your actual images. Keep originals and processed side-by-sides consistent in size and naming.
+## Results gallery
 
-docs/images/
+_Replace with your actual images. Keep originals and processed side-by-sides consistent in size and naming._
+
+_docs/images/
 ├─ input/
 │  ├─ sample1.png
 │  └─ sample2.png
@@ -158,64 +165,74 @@ docs/images/
 └─ cuda_clahe/
    ├─ sample1_baseline.png
    ├─ sample1_opt_minAtomics.png
-   └─ sample1_opt_vecLoads.png
+   └─ sample1_opt_vecLoads.png_
 
 
-Example markdown:
+**Example markdown:**
 
 **Sample 1**
 | Input | OpenCV CLAHE (CPU) | CUDA CLAHE (baseline) | CUDA (vectorized+warp agg) |
 |------:|:-------------------:|:---------------------:|:---------------------------:|
 | ![in](docs/images/input/sample1.png) | ![cpu](docs/images/opencv_clahe/sample1.png) | ![cuda](docs/images/cuda_clahe/sample1_baseline.png) | ![opt](docs/images/cuda_clahe/sample1_opt_vecLoads.png) |
 
-Reproducing measurements
+---
 
-Build as above (prefer -DCMAKE_BUILD_TYPE=Release).
+## Reproducing measurements
 
-Run ./test multiple times per device. Each run prints four CUDA times (ms) and four CPU times (µs).
+- Build as above (prefer -DCMAKE_BUILD_TYPE=Release).
 
-Collect logs and parse into CSV (one row per trial). Keep image size, tile size, and clip limit fixed during a batch.
+- Run ./test multiple times per device. Each run prints four CUDA times (ms) and four CPU times (µs).
 
-Report mean ± stddev per device/setting.
+- Collect logs and parse into CSV (one row per trial). Keep image size, tile size, and clip limit fixed during a batch.
+
+- Report mean ± stddev per device/setting.
 (Tip: record GPU clocks/power mode on Jetsons.)
 
-What we time
+## What we time
 
-CUDA: kernel timing via cudaEventRecord around the CLAHE kernel sections.
+- CUDA: kernel timing via cudaEventRecord around the CLAHE kernel sections.
 
-CPU: std::chrono::high_resolution_clock around OpenCV’s clahe->apply().
+- CPU: std::chrono::high_resolution_clock around OpenCV’s clahe->apply().
 
-If you change what’s inside the timing scope (e.g., include H2D/D2H copies), note that clearly in the results.
+- If you change what’s inside the timing scope (e.g., include H2D/D2H copies), note that clearly in the results.
 
-Notes on AI usage
+
+___
+
+## Notes on AI usage
 
 This project primarily benchmarks an existing CUDA CLAHE prototype and explores optimizations. Because the work was evaluation-oriented, we used AI-generated code fragments to:
 
-draft alternative kernels quickly,
+- draft alternative kernels quickly,
 
-sketch variants (warp-aggregated atomics, vectorized loads, etc.),
+- sketch variants (warp-aggregated atomics, vectorized loads, etc.),
 
-and iterate on instrumentation.
+- iterate on instrumentation.
 
-Important: these kernels are experimental. They are not production-ready and may have edge-case bugs (e.g., LUT mapping inversions if alignment or CDF handling is off). Treat them as starting points for manual tuning.
+**Important:** these kernels are experimental. They are not production-ready and may have edge-case bugs (e.g., LUT mapping inversions if alignment or CDF handling is off). Treat them as starting points for manual tuning.
 
-License
+___
+
+## License
 
 Source files contain license headers describing usage restrictions (MetaVi Labs ↔ ibidi GmbH).
-If you add a LICENSE file, reference it here. Otherwise, keep code headers authoritative.
 
-Appendix — Tuning tips (quick checklist)
+_If you add a LICENSE file, reference it here. Otherwise, keep code headers authoritative._
 
-Build with -O3 -DNDEBUG; avoid mixed Debug/Release dependencies.
+___
 
-Verify tile area normalization for border tiles (prevents vignette).
+## Appendix — Tuning tips (quick checklist)
 
-If you see darker output: check the CDF mapping formula and whether it’s inadvertently inverted; confirm LUT interpolation is bilinear and indices are clamped.
+- Build with -O3 -DNDEBUG; avoid mixed Debug/Release dependencies.
 
-When testing vectorized loads:
+- Verify tile area normalization for border tiles (prevents vignette).
 
-ensure alignment or guard unaligned prologue/tail,
+- If you see darker output: check the CDF mapping formula and whether it’s inadvertently inverted; confirm LUT interpolation is bilinear and indices are clamped.
 
-confirm the same sampling order (no byte/endianness surprises).
+- When testing vectorized loads:
 
-Measure one change at a time; log GPU clocks/temperature; pin power mode on Jetsons.
+    - ensure alignment or guard unaligned prologue/tail,
+
+    - confirm the same sampling order (no byte/endianness surprises).
+
+- Measure one change at a time; log GPU clocks/temperature; pin power mode on Jetsons.
