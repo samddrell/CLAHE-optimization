@@ -26,7 +26,9 @@ int main()
     }
     Image bigImage(img);
     Image extraBigImage(bigImage);
-    std::string ouFilePath1 = "normal_clahe_4_16.png";
+    // std::string ouFilePath1 = "normal_clahe_4_16.png";
+    // std::string ouFilePath1 = "test_A_4_16.png";
+    std::string ouFilePath1 = "restricted_4_16.png";
     std::string ouFilePath2 = "big_clahe_4_16.png";
     std::string ouFilePath3 = "extra_big_clahe_4_16.png";
     std::string ouFilePath4 = "small_clahe_4_16.png";
@@ -56,13 +58,17 @@ int main()
 
     // Your kernel or image operation
     smallImage.CLAHE(4,16);
+    // smallImage.SaveFile(ouFilePath4,100);
     img.CLAHE(4,16);
+    img.SaveFile(ouFilePath1,100);
     bigImage.CLAHE(4,16);
     extraBigImage.CLAHE(4,16);
     // extraBigImage.SaveFile(ouFilePath3,100);
 
     smallImageCPU.cpuCLAHE(4,16);
+    // smallImageCPU.SaveFile(ouFilePath4cpu,100);
     imgCPU.cpuCLAHE(4,16);
+    // imgCPU.SaveFile(ouFilePath1cpu,100);
     bigImageCPU.cpuCLAHE(4,16);
     extraBigImageCPU.cpuCLAHE(4,16);
     // extraBigImageCPU.SaveFile(ouFilePath3cpu,100);

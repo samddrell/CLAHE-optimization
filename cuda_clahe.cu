@@ -64,7 +64,13 @@ __global__ void applyCLAHE(const unsigned char* __restrict__ input,
                            int tilesX, int tilesY,
                            const unsigned char* __restrict__ tileLUT);
 
-__global__ void test_A(const unsigned char*  input, 
+__global__ void test_A(const unsigned char* input,
+                       int width, int height,
+                       int tileSize, int clipLimit,
+                       unsigned char* tileLUT,
+                       int tilesX, int tilesY);
+
+__global__ void test_A_Modified_fast(const unsigned char*  input, 
                        int width, int height,
                        int tileSize, int clipLimit,
                        unsigned char*  tileLUT,
@@ -159,10 +165,9 @@ int CLAHE_8u(unsigned char* __restrict__ input, unsigned char* __restrict__ outp
     dim3 blockTile(16,16);                 // 256 threads = 8 warps
     dim3 gridTile(tilesX, tilesY);
 
-    hist_vec_warpagg<<<gridTile, blockTile>>>(d_input, width, height,
+    computeTileLUT<<<gridTile, blockTile>>>(d_input, width, height,
                                         tileSize, effectiveClipLimit,
                                         d_tileLUT, tilesX, tilesY);
-
 
     // ----------------------------------------------------------------------------
     // Histogram per warp kernal launch code
@@ -343,18 +348,14 @@ __global__ void computeTileLUT(const unsigned char* __restrict__ input,
     }
 }
 
-// This kernel is launched with one block per tile.
-#ifndef HIST_SIZE
-#define HIST_SIZE 256
-#endif
-
-__global__ void test_A(const unsigned char*  input, 
+__global__ void test_A(const unsigned char* input,
                        int width, int height,
                        int tileSize, int clipLimit,
-                       unsigned char*  tileLUT,
+                       unsigned char* tileLUT,
                        int tilesX, int tilesY)
 {
-    const int tileX = blockIdx.x, tileY = blockIdx.y;
+    const int tileX = blockIdx.x;
+    const int tileY = blockIdx.y;
     const int tileIndex = tileY * tilesX + tileX;
 
     const int startX = tileX * tileSize;
@@ -367,7 +368,9 @@ __global__ void test_A(const unsigned char*  input,
     // zero with ALL threads
     const int tpb = blockDim.x * blockDim.y;
     const int tid = threadIdx.y * blockDim.x + threadIdx.x;
-    for (int i = tid; i < HIST_SIZE; i += tpb) hist[i] = 0;
+    for (int i = tid; i < HIST_SIZE; i += tpb) {
+        hist[i] = 0u;
+    }
     __syncthreads();
 
     const int lane = tid & 31;
@@ -379,7 +382,7 @@ __global__ void test_A(const unsigned char*  input,
 
             // Use only active lanes in this iteration
             unsigned m = __match_any_sync(__activemask(), pix);
-            int leader = __ffs(m) - 1;      // 0..31
+            int leader = __ffs(m) - 1;  // 0..31
             if (lane == leader) {
                 int votes = __popc(m);
                 atomicAdd(&hist[pix], votes);
@@ -399,7 +402,9 @@ __global__ void test_A(const unsigned char*  input,
             }
         }
         const int distribute = totalExcess / HIST_SIZE;
-        for (int i = 0; i < HIST_SIZE; ++i) hist[i] += distribute;
+        for (int i = 0; i < HIST_SIZE; ++i) {
+            hist[i] += distribute;
+        }
 
         // CDF + LUT
         int cdf = 0, cdfMin = -1;
@@ -409,6 +414,108 @@ __global__ void test_A(const unsigned char*  input,
             if (cdfMin < 0 && cdf) cdfMin = cdf;
             tileLUT[tileIndex * HIST_SIZE + i] =
                 (unsigned char)(((cdf - cdfMin) * 255) / max(numPixels - cdfMin, 1));
+        }
+    }
+}
+
+
+// This kernel is launched with one block per tile.
+#ifndef HIST_SIZE
+#define HIST_SIZE 256
+#endif
+
+// Faster luminance-preserving CLAHE LUT builder.
+// Keep the same launch config you already use (one block per tile, e.g., 16x16).
+__global__ void test_A_Modified_fast(const unsigned char* __restrict__ input,
+                                     int width, int height,
+                                     int tileSize, int clipLimit,
+                                     unsigned char* __restrict__ tileLUT,
+                                     int tilesX, int tilesY)
+{
+    const int tileX = blockIdx.x, tileY = blockIdx.y;
+    const int tileIndex = tileY * tilesX + tileX;
+
+    const int startX = tileX * tileSize;
+    const int startY = tileY * tileSize;
+    const int endX   = min(startX + tileSize, width);
+    const int endY   = min(startY + tileSize, height);
+
+    __shared__ __align__(128) unsigned int hist[HIST_SIZE];
+
+    // Zero histogram with all threads
+    const int bx  = blockDim.x, by = blockDim.y;
+    const int tpb = bx * by;
+    const int tid = threadIdx.y * bx + threadIdx.x;
+    for (int i = tid; i < HIST_SIZE; i += tpb) hist[i] = 0u;
+    __syncthreads();
+
+    // Accumulate histogram (simple shared atomics have been best on your GPUs)
+    for (int y = startY + threadIdx.y; y < endY; y += by) {
+        int idx = y * width + startX + threadIdx.x;
+        for (int x = startX + threadIdx.x; x < endX; x += bx, ++idx) {
+            atomicAdd(&hist[input[idx]], 1u);
+        }
+    }
+    __syncthreads();
+
+    // Single-thread post processing per tile
+    if (tid == 0) {
+        // 1) Clip & redistribute (standard CLAHE)
+        int excess = 0;
+        for (int i = 0; i < HIST_SIZE; ++i) {
+            int v = (int)hist[i];
+            if (v > clipLimit) { excess += (v - clipLimit); v = clipLimit; }
+            hist[i] = (unsigned int)v;
+        }
+        const int distribute = excess / HIST_SIZE;
+        if (distribute) {
+            for (int i = 0; i < HIST_SIZE; ++i) hist[i] += (unsigned int)distribute;
+        }
+
+        // 2) Build CDF → provisional LUT (brightness-preserving, border fix)
+        const int fullTile = tileSize * tileSize;
+        const int tileArea = max((endX - startX) * (endY - startY), 1);
+        const float scale  = (float)fullTile / (float)tileArea;  // treat border tiles as full tiles
+
+        // meanIn = sum(i*hist[i]) / tileArea
+        unsigned long long sumIn = 0ull;
+        for (int i = 0; i < HIST_SIZE; ++i) sumIn += (unsigned long long)i * (unsigned long long)hist[i];
+        const float meanIn = (float)sumIn / (float)tileArea;
+
+        // Provisional LUT and meanOut in one pass
+        unsigned int cdf = 0;
+        int cdfMin = -1;
+        float meanOutNum = 0.0f;
+        unsigned char* dst = &tileLUT[tileIndex * HIST_SIZE];
+
+        for (int i = 0; i < HIST_SIZE; ++i) {
+            cdf += hist[i];
+            if (cdfMin < 0 && cdf) cdfMin = (int)cdf;
+
+            // Standard CLAHE mapping, with area scaling to avoid vignette
+            const float num = ((float)cdf - (float)cdfMin) * scale;
+            const float den = fmaxf((float)fullTile - (float)cdfMin * scale, 1.0f);
+            float v = 255.0f * (num / den);
+            v = fminf(255.0f, fmaxf(0.0f, v));
+            const unsigned char u8 = (unsigned char)(v + 0.5f);
+            dst[i] = u8;
+
+            meanOutNum += v * (float)hist[i];
+        }
+        const float meanOut = meanOutNum / (float)tileArea;
+
+        // 3) Brightness shift (+ a tiny identity blend to avoid halos)
+        //    (Set brighten_abs=0 and alpha=0 for pure CLAHE behavior.)
+        const float brighten_abs = 8.0f;  // try 5–12; or make this a parameter
+        const float alpha        = 0.10f; // 0..0.25 small identity mix; 0 = none
+
+        const float delta = (meanIn + brighten_abs) - meanOut;
+
+        for (int i = 0; i < HIST_SIZE; ++i) {
+            float v = (float)dst[i] + delta;              // brightness shift
+            v = (1.0f - alpha)*v + alpha*(float)i;       // gentle identity blend
+            v = fminf(255.0f, fmaxf(0.0f, v));           // clamp
+            dst[i] = (unsigned char)(v + 0.5f);
         }
     }
 }
@@ -709,6 +816,5 @@ __global__ void applyCLAHE(const unsigned char* __restrict__ input,
     output[y * width + x] = (unsigned char)(I11 * w11 + I21 * w21 +
                                               I12 * w12 + I22 * w22);
 }
-
-
-}}
+        }
+    }
