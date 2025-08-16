@@ -1,85 +1,80 @@
-CUDA CLAHE — Benchmarking & Optimization Notes
+# CUDA CLAHE — Benchmarking & Optimization Notes
 
 Contrast Limited Adaptive Histogram Equalization (CLAHE) accelerated with CUDA, plus a set of micro-benchmarks and experiments exploring performance trade-offs on different GPUs/Jetsons.
 
-Table of contents
+---
 
-Introduction
+## Table of contents
+- [Introduction](#introduction)
+- [Background](#background)
+- [Build & run](#build--run)
+- [Part 1 — Device benchmarking](#part-1--device-benchmarking)
+- [Part 2 — Optimization experiments](#part-2--optimization-experiments)
+- [Results gallery](#results-gallery)
+- [Reproducing measurements](#reproducing-measurements)
+- [Notes on AI usage](#notes-on-ai-usage)
+- [License](#license)
+- [Appendix — Tuning tips](#appendix--tuning-tips)
 
-Background
+---
 
-Build & run
-
-Part 1 — Device benchmarking
-
-Part 2 — Optimization experiments
-
-Results gallery
-
-Reproducing measurements
-
-Notes on AI usage
-
-License
-
-Introduction
+## Introduction
 
 MetaVi Labs builds microscope software for cell tracking and analysis. A key first step for users is simply seeing what was captured—fast, reliable contrast enhancement helps.
 
 This project benchmarks a CUDA implementation of CLAHE to:
 
-quantify speed across several devices (Jetsons and desktop GPUs),
+- **quantify speed** across several devices (Jetsons and desktop GPUs),
+- **compare** against OpenCV’s CPU CLAHE,
+- and **explore kernel-level optimizations** to understand whether high-end hardware costs are justified by measurable latency improvements.
 
-compare against OpenCV’s CPU CLAHE,
-
-and explore kernel-level optimizations to understand whether high-end hardware costs are justified by measurable latency improvements.
-
-Why CUDA CLAHE?
+### Why CUDA CLAHE?
 CLAHE boosts local contrast without over-amplifying noise. A CUDA path enables near-interactive viewing on supported devices.
 
-Background
-What CLAHE does (and why)
+---
 
+## Background
+
+### What CLAHE does (and why)
 CLAHE divides an image into tiles, clips each tile’s histogram to a limit (to avoid over-contrast), builds a per-tile LUT, then bilinearly interpolates between LUTs to avoid tile seams.
 
-OpenCV vs. proprietary flow
-
+### OpenCV vs. proprietary flow
 We show side-by-side examples using:
 
-OpenCV CLAHE (CPU)
+- **OpenCV CLAHE (CPU)**
+- **Proprietary/experimental CUDA CLAHE** (this repo)
 
-Proprietary/experimental CUDA CLAHE (this repo)
-
-Add your figures here
+_Add your figures here:_
 ![OpenCV CLAHE](docs/images/opencv_clahe.png)
 ![CUDA CLAHE](docs/images/cuda_clahe.png)
 
-Why not Canny (for our use-case)
+### Why not Canny (for our use-case)
+Canny edge detection can look appealing on greyscale imagery, but it extracts edges—**not contrast**. It’s not a drop-in for improving overall visibility.
 
-Canny edge detection can look appealing on greyscale imagery, but it extracts edges—not contrast. It’s not a drop-in for improving overall visibility.
-
-Add comparison
+_Add comparison:_
 ![Canny vs CLAHE](docs/images/canny_vs_clahe.png)
 
-Build & run
-Requirements
+---
 
-CUDA toolkit (matching your device)
+## Build & run
 
-CMake ≥ 3.16
+### Requirements
+- CUDA toolkit (matching your device)
+- CMake ≥ 3.16
+- A recent C++ compiler
+- OpenCV (core, imgproc, imgcodecs, highgui, videoio)
+- (Optional) libpng / libjpeg if your build uses them
 
-A recent C++ compiler
-
-OpenCV (core, imgproc, imgcodecs, highgui, videoio)
-
-(Optional) libpng / libjpeg if your build uses them
-
-Configure & build
+### Configure & build
+```bash
 # From repo root
 mkdir -p build && cd build
 cmake ..           # add -DCMAKE_BUILD_TYPE=Release for optimized builds
 cmake --build . -j
 
+##############################################################################
+# Below This line has not been formatted
+##############################################################################
 Run
 ./test
 # The binary prints four CUDA timings (in ms) and four CPU timings (in µs) per run.
