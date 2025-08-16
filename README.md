@@ -71,6 +71,7 @@ _Add comparison:_
 mkdir -p build && cd build
 cmake ..           # add -DCMAKE_BUILD_TYPE=Release for optimized builds
 cmake --build . -j
+'''
 
 ##############################################################################
 # Below This line has not been formatted
