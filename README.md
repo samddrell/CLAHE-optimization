@@ -20,33 +20,34 @@ Contrast Limited Adaptive Histogram Equalization (CLAHE) accelerated with CUDA, 
 
 ## Introduction
 
-MetaVi Labs builds microscope software for cell tracking and analysis. A key first step for users is simply seeing what was captured—fast, reliable contrast enhancement helps.
+MetaVi Labs builds microscope software for cell tracking and analysis. As the software displays the images to the user, a series of corrections must be applied to the image. One crucial step in the correction process is contrast enhancement, to provide a clear image with dark cells that pop off of the light background. The contrast algorithm that MetaVi Labs has chosen to utilize is the CLAHE (Contrast-Limited Adaptive Histogram Equalization), which provides an even contrast across the image, with various inputs that allow the contrast and its application to be tuned. CLAHE boosts local contrast without over-amplifying noise.
+
+The Clahe algorithm was chosen for a variety of factors, but partly because the development team at MetaVi labs was able to build their own, proprietary, CLAHE algorithm that could be accelerated via CUDA hardware acceleration. A CUDA path enables near-interactive viewing on supported devices. This project seeks to answer the question: how much faster is MetaVi Lab's proprietary CUDA algorithm when compared to prebuilt, already-optimized, CLAHE algorithms that run on the CPU.
 
 This project benchmarks a CUDA implementation of CLAHE to:
 
-- **quantify speed** across several devices (Jetsons and desktop GPUs),
-- **compare** against OpenCV’s CPU CLAHE,
-- and **explore kernel-level optimizations** to understand whether high-end hardware costs are justified by measurable latency improvements.
-
-#### Why CUDA CLAHE?
-CLAHE boosts local contrast without over-amplifying noise. A CUDA path enables near-interactive viewing on supported devices.
+- **Quantify speed** across several devices (Jetsons and desktop GPUs),
+- **Compare** against OpenCV’s CPU CLAHE,
+- and **Explore kernel-level optimizations** to understand whether high-end hardware costs are justified by measurable latency improvements.
 
 ---
 
 ## Background
 
 ### What CLAHE does (and why)
-CLAHE divides an image into tiles, clips each tile’s histogram to a limit (to avoid over-contrast), builds a per-tile LUT, then bilinearly interpolates between LUTs to avoid tile seams.
+CLAHE is a multi-step process of several key steps. It begins by dividing an image into equal-sized tiles, and it clips each tile’s histogram to a limit (to avoid over-contrast). The excess is then reapplied to histogram, and then the histogram is scaled based off of the histogram's Cummulative Distribution Function. The equalized values are then stored in a LUT (one per tile) to optimize value accessing speeds. Lastly, the whole image is bilinearly interpolated to smooth over tile seams, creating one, cohesive, image.
+
 
 ### OpenCV vs. proprietary flow
-We show side-by-side examples using:
+Below, we show side-by-side examples using:
+**OpenCV CLAHE (CPU)**
+and
+ **Proprietary/experimental CUDA CLAHE** (this repo).
+Two comparisons are shown; the second image below shows the same comparison, only zoomed in.
 
-- **OpenCV CLAHE (CPU)**
-- **Proprietary/experimental CUDA CLAHE** (this repo)
+![OpenCV CLAHE](images_for_readme/compare_cuda_cpu_clahe.png)
+![OpenCV CLAHE](images_for_readme/compare_cuda_cpu_clahe_zoomed.png)
 
-_Add your figures here:_
-![OpenCV CLAHE](docs/images/opencv_clahe.png)
-![CUDA CLAHE](docs/images/cuda_clahe.png)
 
 ### Why not Canny (for our use-case)
 Canny edge detection can look appealing on greyscale imagery, but it extracts edges—**not contrast**. It’s not a drop-in for improving overall visibility.
