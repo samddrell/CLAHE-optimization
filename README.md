@@ -22,7 +22,7 @@ Contrast Limited Adaptive Histogram Equalization (CLAHE) accelerated with CUDA, 
 
 MetaVi Labs builds microscope software for cell tracking and analysis. As the software displays the images to the user, a series of corrections must be applied to the image. One crucial step in the correction process is contrast enhancement, to provide a clear image with dark cells that pop off of the light background. The contrast algorithm that MetaVi Labs has chosen to utilize is the CLAHE (Contrast-Limited Adaptive Histogram Equalization), which provides an even contrast across the image, with various inputs that allow the contrast and its application to be tuned. CLAHE boosts local contrast without over-amplifying noise.
 
-The Clahe algorithm was chosen for a variety of factors, but partly because the development team at MetaVi labs was able to build their own, proprietary, CLAHE algorithm that could be accelerated via CUDA hardware acceleration. A CUDA path enables near-interactive viewing on supported devices. This project seeks to answer the question: how much faster is MetaVi Lab's proprietary CUDA algorithm when compared to prebuilt, already-optimized, CLAHE algorithms that run on the CPU.
+The Clahe algorithm was chosen for a variety of factors, but partly because the development team at MetaVi labs was able to build their own, proprietary, CLAHE algorithm that could be accelerated via CUDA hardware acceleration. A CUDA path enables near-interactive viewing on supported devices. This project seeks to answer the question: how much faster is MetaVi Lab's proprietary CUDA algorithm when compared to prebuilt, already-optimized, CLAHE algorithms that run on the CPU. In order to fully understand the application-time difference between the CPU and CUDA, the CLAHE algorithms were applied on multiple devices, demonstrating which devices would be most useful for this algorithm.
 
 This project benchmarks a CUDA implementation of CLAHE to:
 
@@ -45,15 +45,19 @@ and
  **Proprietary/experimental CUDA CLAHE** (this repo).
 Two comparisons are shown; the second image below shows the same comparison, only zoomed in.
 
+It may be seen that, by developing a proprietary algorithm, the MetaVi developers where able to fully control how the CLAHE algorithm would be applied. Note how the proprietary CLAHE algorithm is more true to the original image: the background reflects the original with minimal difference, and no lines are overly bold, but the visibility range between each cell is compressed, creating a more even look. In this application, CLAHE functions as a sharpening tool, which is incredibly advantageous when photographing such small subjects, as the difference between focal planes is amplified due to the scale of the cells.
+
+_OpenCV vs Proprietary Algorithms:_
 ![OpenCV CLAHE](images_for_readme/compare_cuda_cpu_clahe.png)
 ![OpenCV CLAHE](images_for_readme/compare_cuda_cpu_clahe_zoomed.png)
 
 
-### Why not Canny (for our use-case)
-Canny edge detection can look appealing on greyscale imagery, but it extracts edges—**not contrast**. It’s not a drop-in for improving overall visibility.
+### Why CLAHE (for our use-case)
+To demonstrate why contast adjustment, visually, is the right strategy to use, we compare CLAHE with Canny Edge Detection. Canny Edge Detection may seem like an attractive option to clearly present harsh lines on a light background to the viewer, but, as seen below, edge detection performs a very different role from contrast adjustment, even in a high-contrast, black-and-white, image.
+Canny edge detection can look appealing on greyscale imagery, but it extracts edges, not contrast, preventing it from being a drop-in for improving overall visibility.
 
-_Add comparison:_
-![Canny vs CLAHE](docs/images/canny_vs_clahe.png)
+_Canny Applied:_
+![Canny vs CLAHE](images_for_readme/canny_applied.png)
 
 ---
 
@@ -85,7 +89,8 @@ cmake --build . -j
 
 ## Part 1 — Device benchmarking
 
-We compare four devices:
+In this expiriement, the application speed of the OpenCV CPU and MetaVi CUDA CLAHE algorithms were compared across four devices and four image sizes. Each test consisted of 10 trials of each method of CLAHE application, on each image size, on each device. The following four devices were compared: 
+
 
 - Jetson AGX Orin
 
@@ -94,8 +99,6 @@ We compare four devices:
 - RTX 4090
 
 - RTX 2000 Ada
-
-We also include OpenCV CPU timings for reference.
 
 ### Threading
 

@@ -55,6 +55,10 @@ int main()
     std::string ouFilePath3cpu = "CPU_extra_big_clahe_4_16.png";
     std::string ouFilePath4cpu = "CPU_small_clahe_4_16.png";
 
+    // Prepare CPU CANNY Image
+    std::string ouFilePathCANNY = "canny_applied.png";
+    Image imgCANNY = img;
+
 
     // Your kernel or image operation
     smallImage.CLAHE(4,16);
@@ -81,7 +85,8 @@ int main()
     // img.CLAHE(4,32);
 
     // CANNY Edge Detection
-    // std::string ouFilePathCANNY = "canny_applied.png";
+    imgCANNY.cpuCANNY();
+    imgCANNY.SaveFile(ouFilePathCANNY,100);
 
     // Image cannyImg;
     // if (!(cannyImg.OpenFile(inFilePathSmall))) 
