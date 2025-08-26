@@ -89,22 +89,39 @@ cmake --build . -j
 
 ## Part 1 — Device benchmarking
 
-In this expiriement, the application speed of the OpenCV CPU and MetaVi CUDA CLAHE algorithms were compared across four devices and four image sizes. Each test consisted of 10 trials of each method of CLAHE application, on each image size, on each device. The following four devices were compared: 
+In the first part of this expiriement, the application speed of the OpenCV CPU and MetaVi CUDA CLAHE algorithms were compared across four devices and four image sizes. Each test consisted of 10 trials of each method of CLAHE application, on each image size, on each device. The following four devices were compared: 
 
+- Jetson AGX Orin - _Chosen due to it's current use in MetaVi projects._
+- Jetson Orin Nano - _Chosen to perform value-cost analysis of the CUDA hardware built into the Jetson Orin line of products._
+- RTX 4090 - _Chosen due to it's current use in MetaVi projects._
+- RTX 2000 Ada - _Chosen due to it's current use in MetaVi projects._
 
-- Jetson AGX Orin
+The following four image sizes were chosen to compare processing speeds on different sized images:
+			
+- 3300x2200 - _Common JPG image resolution._
+- 4096x3000 - _Chosen becuase it is the standard size processed by MetaVi's CLAHE algorithm._
+- 8192x6000 - _Double the size of the standard._
+- 16384x12000 - _Four times the size of the standard._
 
-- Jetson Orin Nano
+_ADA 2000 vs 4090:_
 
-- RTX 4090
+[ADA 2000 vs 4090](csv_for_readme/Clahe Data - ADA 2000 vs RTX4090.csv)
 
-- RTX 2000 Ada
+_Orin Nano vs AGX Orin:_
+
+[Orin Nano vs AGX Orin](csv_for_readme/Clahe Data - Nano vs AGX.csv)
+
 
 ### Threading
 
-CPU path uses OpenCV’s implementation (multi-threading depends on your OpenCV build and OMP/TBB).
+Of course, multithreading is utilized to increase CLAHE algorithm computation speed. Threading, as it is utilized by the CPU-computed OpenCV implementation, depends on your OpenCV build and OMP/TBB.
 
-CUDA path uses one block per tile; kernel configuration explained below.
+MetaVi's proprietary CUDA algorithm, however, is built on multithreading. The implementation of multithreading changes, depending on which part of the CLAHE process is being executed. During the tiling and histogram clipping and redistrobuting stages of the CLAHE process, Each thread block is associated with one tile, matching one thread per pixel in the block. When CLAHE itself is applied, each thread continues to match to one pixel.
+
+
+
+
+
 
 _Insert your summary table (replace “—” with your values or link a CSV):_
 
