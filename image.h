@@ -8,16 +8,10 @@
 //Image Class
 class Image
 {
-    private:
-        int m_buffSize;           // Resolution for JPEG compression
-
-        int openJPEG(struct jpeg_decompress_struct *cinfo,
-                        std::string infilename);
-
     public:
-        uint8_t *m_data;
-        int m_width;
-        int m_height;
+        uint8_t *Data;
+        int Width;
+        int Height;
 
         Image(); // Default constructor
         Image(int w, int h);    // Alocate memory for the Array
@@ -49,6 +43,12 @@ class Image
         void cpuCANNY();
 
         ~Image(); // Free memory
+
+    private:
+        int m_buffSize;           // Resolution for JPEG compression
+        int openJPEG(struct jpeg_decompress_struct *cinfo,
+                        std::string infilename);
+
 };
 
 #endif // IMAGE_H

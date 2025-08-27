@@ -91,23 +91,23 @@ void my_error_exit(j_common_ptr cinfo)
 ///////////////////////////////////////////////////////////////////////
 // Image class constructor
 ///////////////////////////////////////////////////////////////////////
-Image::Image() : m_width(0), m_height(0), m_data(nullptr) {}
+Image::Image() : Width(0), Height(0), Data(nullptr) {}
 
 ///////////////////////////////////////////////////////////////////////
 // Image class constructor
 ///////////////////////////////////////////////////////////////////////
 Image::Image(int w, int h)
 {
-    m_width = w;
-    m_height = h;
-    m_buffSize = m_width * m_height * 3; // Calculate the resolution
+    Width = w;
+    Height = h;
+    m_buffSize = Width * Height * 3; // Calculate the resolution
 
     // Allocate memory for the pixel data Array
     // Initialize to 0
     if(w != 0 || h != 0) 
-        m_data = new uint8_t[m_buffSize](); 
+        Data = new uint8_t[m_buffSize](); 
     else
-        m_data = nullptr; // If width or height is 0, set m_data to nullptr
+        Data = nullptr; // If width or height is 0, set Data to nullptr
 }    
 
 ///////////////////////////////////////////////////////////////////////
@@ -117,33 +117,32 @@ Image::Image(int w, int h)
 ///////////////////////////////////////////////////////////////////////
 Image::Image(const Image& other)
 {
-    m_width = other.m_width * 2; // Double the width
-    m_height = other.m_height * 2; // Double the height
-    int newResolution = m_width * m_height; // Calculate the new resolution
+    Width = other.Width * 2; // Double the width
+    Height = other.Height * 2; // Double the height
+    int newResolution = Width * Height; // Calculate the new resolution
     m_buffSize = newResolution * 3; // Calculate the new byte size
 
-    if(m_width != 0 || m_height != 0) 
-        m_data = new uint8_t[m_buffSize](); 
+    if(Width != 0 || Height != 0) 
+        Data = new uint8_t[m_buffSize](); 
     else
-        m_data = nullptr; // If width or height is 0, set m_data to nullptr
+        Data = nullptr; // If width or height is 0, set Data to nullptr
 
-    int midwidth = other.m_width; // Original width
-    int midheight = other.m_height; // Original height
+    int midwidth = other.Width; // Original width
+    int midheight = other.Height; // Original height
 
-    int originalRowSize = other.m_width * 3; // Size of one row in the original image
-    int newRowSize = m_width * 3; // Size of one row in the new image
+    int originalRowSize = other.Width * 3; // Size of one row in the original image
+    int newRowSize = Width * 3; // Size of one row in the new image
 
-    for (int i = 0; i < m_height; i++)
+    for (int i = 0; i < Height; ++i)
     {
-        for (int j = 0; j < originalRowSize; j++)
-        {
-            // print the current row on the right hand side of the image
-            m_data[i * newRowSize + j] = other.m_data[(i % midheight) * originalRowSize + j];
+        const uint8_t* srcRow = other.Data + (i % midheight) * originalRowSize;
+        uint8_t* dstRow = Data + i * newRowSize;
 
-            // print the current row, offset by original row dimension
-            // - This prints the right hand side of the image
-            m_data[originalRowSize + i * newRowSize + j] = other.m_data[(i % midheight) * originalRowSize + j];
-        }
+        // Left half
+        std::memcpy(dstRow, srcRow, static_cast<size_t>(originalRowSize));
+
+        // Right half (same source row, offset by originalRowSize)
+        std::memcpy(dstRow + originalRowSize, srcRow, static_cast<size_t>(originalRowSize));
     }
 }
 
@@ -152,9 +151,9 @@ Image::Image(const Image& other)
 ///////////////////////////////////////////////////////////////////////
 Image::~Image() // Free memory
 {
-    if (m_data) {
-        delete[] m_data;
-        m_data = nullptr;
+    if (Data) {
+        delete[] Data;
+        Data = nullptr;
     }
 }
 
@@ -164,7 +163,7 @@ Image::~Image() // Free memory
 bool Image::operator==(const Image &other) const
 {
     // Check if the dimensions of the images are equal
-    if (m_width != other.m_width || m_height != other.m_height)
+    if (Width != other.Width || Height != other.Height)
     {
         return false; // If dimensions are not equal, return false
     }    
@@ -172,7 +171,7 @@ bool Image::operator==(const Image &other) const
     for (int i = 0; i < m_buffSize; i++)
     {
         // If any pixel data is not equal, return false
-        if (m_data[i] != other.m_data[i])
+        if (Data[i] != other.Data[i])
         {
             return false;
         }
@@ -185,7 +184,7 @@ bool Image::operator==(const Image &other) const
 ///////////////////////////////////////////////////////////////////////
 bool Image::compare(const Image &other, double maxPercentError) const
 {
-    if (m_width != other.m_width || m_height != other.m_height)
+    if (Width != other.Width || Height != other.Height)
     {
         return false; 
     }    
@@ -194,10 +193,10 @@ bool Image::compare(const Image &other, double maxPercentError) const
 
     for (int i = 0; i < m_buffSize; i++)
     {
-        if (m_data[i] != other.m_data[i])
+        if (Data[i] != other.Data[i])
         {
-            mismatchCount += static_cast<double>(other.m_data[i]) - 
-                static_cast<double>(m_data[i]); // Calculate the difference
+            mismatchCount += static_cast<double>(other.Data[i]) - 
+                static_cast<double>(Data[i]); // Calculate the difference
         }
     }
     
@@ -218,35 +217,35 @@ bool Image::compare(const Image &other, double maxPercentError) const
 ///////////////////////////////////////////////////////////////////////
 uint8_t Image::GetPixelRed(int x, int y) 
 {
-    if (x >= m_width || y >= m_height) 
+    if (x >= Width || y >= Height) 
     {
         return 0; // Return 0 if coordinates are out of bounds
     }
-    return m_data[3* m_width *y+ 3 * x + 0]; 
+    return Data[3* Width *y+ 3 * x + 0]; 
 }
 ///////////////////////////////////////////////////////////////////////
 // GET the GREEN value of a pixel
 ///////////////////////////////////////////////////////////////////////
 uint8_t Image::GetPixelGreen(int x, int y) 
 {
-    if (x >= m_width || y >= m_height) 
+    if (x >= Width || y >= Height) 
     {
         return 0; // Return 0 if coordinates are out of bounds
     }
 
-    return m_data[3* m_width *y+ 3 * x + 1]; 
+    return Data[3* Width *y+ 3 * x + 1]; 
 }
 ///////////////////////////////////////////////////////////////////////
 // GET the BLUE value of a pixel
 ///////////////////////////////////////////////////////////////////////
 uint8_t Image::GetPixelBlue(int x, int y) 
 {
-    if (x >= m_width || y >= m_height) 
+    if (x >= Width || y >= Height) 
     {
         return 0; // Return 0 if coordinates are out of bounds
     }
 
-    return m_data[3* m_width *y+ 3 * x + 2]; 
+    return Data[3* Width *y+ 3 * x + 2]; 
 }
 
 ///////////////////////////////////////////////////////////////////////
@@ -254,36 +253,36 @@ uint8_t Image::GetPixelBlue(int x, int y)
 ///////////////////////////////////////////////////////////////////////
 void Image::SetPixelRed(int x, int y,uint8_t r) 
 {
-    if (x >= m_width || y >= m_height) 
+    if (x >= Width || y >= Height) 
     {
         return; // Return if coordinates are out of bounds
     }
 
-    m_data[3* m_width *y+ 3 * x + 0] = r; 
+    Data[3* Width *y+ 3 * x + 0] = r; 
 }
 ///////////////////////////////////////////////////////////////////////
 // SET the GREEN value of a pixel
 ///////////////////////////////////////////////////////////////////////
 void Image::SetPixelGreen(int x, int y, uint8_t g) 
 {
-    if (x >= m_width || y >= m_height) 
+    if (x >= Width || y >= Height) 
     {
         return; // Return if coordinates are out of bounds
     }
 
-    m_data[3* m_width *y+ 3 * x + 1] = g; 
+    Data[3* Width *y+ 3 * x + 1] = g; 
 }
 ///////////////////////////////////////////////////////////////////////
 // SET the BLUE value of a pixel
 ///////////////////////////////////////////////////////////////////////
 void Image::SetPixelBlue(int x, int y, uint8_t b) 
 {
-    if (x >= m_width || y >= m_height) 
+    if (x >= Width || y >= Height) 
     {
         return; // Return if coordinates are out of bounds
     }
 
-    m_data[3* m_width *y+ 3 * x + 2] = b; 
+    Data[3* Width *y+ 3 * x + 2] = b; 
 }
 
 ///////////////////////////////////////////////////////////////////////
@@ -329,7 +328,7 @@ bool Image::SavePNG(std::string filePath)
     }
 
     // Ensure image is not of size 0 before proceeding
-    if (m_height == 0 || m_width == 0 || !m_data)
+    if (Height == 0 || Width == 0 || !Data)
     {
         png_destroy_write_struct(&png, &info);
         fclose(fp);
@@ -385,18 +384,18 @@ bool Image::SavePNG(std::string filePath)
     int compression_type = PNG_COMPRESSION_TYPE_DEFAULT;
     int filter_method = PNG_FILTER_TYPE_DEFAULT;
 
-    png_set_IHDR(png, info, m_width, m_height,
+    png_set_IHDR(png, info, Width, Height,
         bit_depth, color_type, interlace_type,
         compression_type, filter_method);
 
     // Create an array of pointers to each row of the image
     png_bytep* row_pointers = NULL;
-    row_pointers = (png_bytep*)malloc(sizeof(png_bytep) * m_height);
+    row_pointers = (png_bytep*)malloc(sizeof(png_bytep) * Height);
 
     // png_bytep* row_pointers = new png_bytep[height];
-    for (int y = 0; y < m_height; y++)
+    for (int y = 0; y < Height; y++)
     {
-        row_pointers[y] = m_data + y * m_width * 3; 
+        row_pointers[y] = Data + y * Width * 3; 
     }
 
     // Write the image data to the file
@@ -489,14 +488,14 @@ bool Image::OpenPNG(std::string filePath)
 
     // Read in the image data into the Image object
 
-    m_height = png_get_image_height(png, info);
-    m_width = png_get_image_width(png, info);
-    m_buffSize = m_width * m_height * 3; // Calculate the resolution
-    m_data = new uint8_t[m_buffSize];
+    Height = png_get_image_height(png, info);
+    Width = png_get_image_width(png, info);
+    m_buffSize = Width * Height * 3; // Calculate the resolution
+    Data = new uint8_t[m_buffSize];
 
-    for (int i = 0; i < m_height; i++)
+    for (int i = 0; i < Height; i++)
     {
-        memcpy(m_data + i * m_width * 3, row_pointers[i], m_width * 3);
+        memcpy(Data + i * Width * 3, row_pointers[i], Width * 3);
     }
 
     // Destroy the png structures and close the file
@@ -517,10 +516,10 @@ bool Image::SaveJPEG(std::string filename, int quality)
     FILE *outfile;  // Target File
 
     // Pointer to array of pointers to image rows
-    JSAMPARRAY  row_pointers = new JSAMPROW[m_height]; // Pointer to a single row of pixels
-    for (int x = 0; x < m_height; x++)
+    JSAMPARRAY  row_pointers = new JSAMPROW[Height]; // Pointer to a single row of pixels
+    for (int x = 0; x < Height; x++)
     {
-        row_pointers[x] = m_data + x * m_width * 3; // Set row pointers to the image data
+        row_pointers[x] = Data + x * Width * 3; // Set row pointers to the image data
     }
 
     // Step 1 Allocate and initialize JPEG compression object
@@ -550,8 +549,8 @@ bool Image::SaveJPEG(std::string filename, int quality)
     jpeg_stdio_dest(&cinfo, outfile); // send compressed data to a stdio stream
 
     // Step 3 Set parameters for compression
-    cinfo.image_width = m_width; // Image width in pixels
-    cinfo.image_height = m_height; // Image height in pixels
+    cinfo.image_width = Width; // Image width in pixels
+    cinfo.image_height = Height; // Image height in pixels
     cinfo.input_components = 3; // Number of color components per pixel
     cinfo.in_color_space = JCS_RGB; // Color space of the input image
     cinfo.data_precision = 8; // data precision of input image. 
@@ -642,9 +641,9 @@ int Image::openJPEG(struct jpeg_decompress_struct *cinfo, std::string infilename
     // This is type-cast as void because we are only reading entire images
     (void)jpeg_read_header(cinfo, TRUE);
 
-    m_width = cinfo->image_width; // Set the image width
-    m_height = cinfo->image_height; // Set the image height
-    m_buffSize = m_width * m_height * 3; // Calculate the resolution
+    Width = cinfo->image_width; // Set the image width
+    Height = cinfo->image_height; // Set the image height
+    m_buffSize = Width * Height * 3; // Calculate the resolution
 
 
     // Step 4: set parameters for decompression 
@@ -661,14 +660,14 @@ int Image::openJPEG(struct jpeg_decompress_struct *cinfo, std::string infilename
     //      input jpeg and the output ppm
     buffer = (*cinfo->mem->alloc_sarray)((j_common_ptr)cinfo, JPOOL_IMAGE, row_stride, 1);
 
-    // Write to data member m_data adaptation
-    m_data = new uint8_t[m_buffSize];
+    // Write to data member Data adaptation
+    Data = new uint8_t[m_buffSize];
 
 
     // Step 6: Line by line, read jpeg to ppm
     while (cinfo->output_scanline < cinfo->output_height)
     {
-        buffer[0] = m_data + (cinfo->output_scanline * row_stride);
+        buffer[0] = Data + (cinfo->output_scanline * row_stride);
         (void)jpeg_read_scanlines(cinfo, buffer, 1);
         // fwrite(buffer[0], 1, row_stride, outfile);
     }
@@ -771,15 +770,15 @@ void Image::CLAHE(int clipLimit, int tileGridSize)
 {
     // Make temporary data buffer
     //  - This is 1D for grayscale
-    uint8_t *inputData = new uint8_t[m_height * m_width];
-    uint8_t *outputData = new uint8_t[m_height * m_width];
-    // printf("Made processed Data of size %d\n", m_height * m_width);
+    uint8_t *inputData = new uint8_t[Height * Width];
+    uint8_t *outputData = new uint8_t[Height * Width];
+    // printf("Made processed Data of size %d\n", Height * Width);
 
     // combine all color channels into R
-    for(int i = 0; i < m_width * m_height; i++)
+    for(int i = 0; i < Width * Height; i++)
     {   // Average the RGB values into R
         int offset = i * 3;
-        inputData[i] = (m_data[offset + 0] + m_data[offset + 1] + m_data[offset + 2]) / 3; 
+        inputData[i] = (Data[offset + 0] + Data[offset + 1] + Data[offset + 2]) / 3; 
     }
     // printf("combined all color channels into R\n");
 
@@ -790,7 +789,7 @@ void Image::CLAHE(int clipLimit, int tileGridSize)
 
     // cudaEventRecord(start);
     // Your kernel or image operation
-    MetaViLabs::Cuda::CLAHE_8u(inputData,outputData, m_width, m_height, clipLimit, tileGridSize);
+    MetaViLabs::Cuda::CLAHE_8u(inputData,outputData, Width, Height, clipLimit, tileGridSize);
 
     // cudaEventRecord(stop);
     // printf("CLAHE_8u finished\n");
@@ -800,15 +799,15 @@ void Image::CLAHE(int clipLimit, int tileGridSize)
     // cudaEventElapsedTime(&ms, start, stop);
     // printf("GPU CLAHE took %f ms\n", ms);
 
-    // Copy processed data back to m_data
-    for(int i = 0; i < m_width * m_height; i++)
+    // Copy processed data back to Data
+    for(int i = 0; i < Width * Height; i++)
     {
         int offset = i * 3;
-        m_data[offset + 0] = outputData[i]; // Set R
-        m_data[offset + 1] = outputData[i]; // Set G
-        m_data[offset + 2] = outputData[i]; // Set B
+        Data[offset + 0] = outputData[i]; // Set R
+        Data[offset + 1] = outputData[i]; // Set G
+        Data[offset + 2] = outputData[i]; // Set B
     }
-    // printf("Copied processed data back to m_data\n");
+    // printf("Copied processed data back to Data\n");
 
     // Free the temporary data buffer
     delete[] inputData;
@@ -817,8 +816,8 @@ void Image::CLAHE(int clipLimit, int tileGridSize)
 
 void Image::cpuCLAHE(int clipLimit, int tileGridSize)
 {
-    // Create cv::Mat from m_data
-    cv::Mat img(m_height, m_width, CV_8UC3, m_data);
+    // Create cv::Mat from Data
+    cv::Mat img(Height, Width, CV_8UC3, Data);
     
     // Convert to grayscale
     cv::Mat gray;
@@ -840,9 +839,9 @@ void Image::cpuCLAHE(int clipLimit, int tileGridSize)
 
     std::cout << "CPU Elapsed time:  " << duration.count() << " microseconds\n";
 
-    // Convert back to BGR and copy to m_data
+    // Convert back to BGR and copy to Data
     cv::cvtColor(claheImg, img, cv::COLOR_GRAY2BGR);
-    std::memcpy(m_data, img.data, m_buffSize);
+    std::memcpy(Data, img.data, m_buffSize);
 
 }
 
@@ -850,8 +849,8 @@ void Image::cpuCLAHE(int clipLimit, int tileGridSize)
 
 void Image::cpuCANNY()
 {
-    // Create cv::Mat from m_data
-    cv::Mat img(m_height, m_width, CV_8UC3, m_data);
+    // Create cv::Mat from Data
+    cv::Mat img(Height, Width, CV_8UC3, Data);
     
     // Convert to grayscale
     cv::Mat gray;
@@ -868,8 +867,8 @@ void Image::cpuCANNY()
     double threshold2 = 200;
     cv::Canny(blurred, edges, threshold1, threshold2);
 
-    // Convert back to BGR and copy to m_data
+    // Convert back to BGR and copy to Data
     cv::cvtColor(edges, img, cv::COLOR_GRAY2BGR);
-    std::memcpy(m_data, img.data, m_buffSize);
+    std::memcpy(Data, img.data, m_buffSize);
 
 }

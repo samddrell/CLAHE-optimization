@@ -1,15 +1,6 @@
 /*
     Copyright (C) 2022  MetaVi Labs Inc.
 
-    This source listing is licensed to ibidi GmbH for use in creating controlling
-    software for ibidi produced microscopes. This license is a component of a broader
-    agreement (not presented here) between ibidi GmbH and MetaVi Labs Inc.
-
-    This license grants rights for derivative works and improvements limited to microscope components
-    including Auto Focus and basic image enhancement. This license excludes ibidi from creating advanced image analysis
-    based on this software. For example, ibidi may not use this source code to create its own image
-    processing programs for cell segmentation, cell identification, or advanced features which rely on
-    cell segmentation or identification.
 */
 #define CLAHE_PRIVATE
 #include "cuda_clahe.h"
@@ -46,6 +37,11 @@ namespace Cuda
 // ----------------------------------------------------------------------------
 // Device Kernels Declarations (assumed to be implemented elsewhere)
 // ----------------------------------------------------------------------------
+__global__ void originalComputeTileLUT(const unsigned char* input, int width, int height,
+                               int tileSize, int clipLimit,
+                               unsigned char* tileLUT,
+                               int tilesX, int tilesY);
+
 __global__ void computeTileLUT(const unsigned char* __restrict__ input, 
                                int width, int height,
                                int tileSize, int clipLimit,
@@ -165,7 +161,7 @@ int CLAHE_8u(unsigned char* __restrict__ input, unsigned char* __restrict__ outp
     dim3 blockTile(16,16);                 // 256 threads = 8 warps
     dim3 gridTile(tilesX, tilesY);
 
-    computeTileLUT<<<gridTile, blockTile>>>(d_input, width, height,
+    originalComputeTileLUT<<<gridTile, blockTile>>>(d_input, width, height,
                                         tileSize, effectiveClipLimit,
                                         d_tileLUT, tilesX, tilesY);
 
@@ -259,6 +255,91 @@ int CLAHE_8u(unsigned char* __restrict__ input, unsigned char* __restrict__ outp
     return 0;
 }
 
+// This kernel is launched with one block per tile.
+__global__ void originalComputeTileLUT(const unsigned char* input, int width, int height,
+                               int tileSize, int clipLimit,
+                               unsigned char* tileLUT,
+                               int tilesX, int tilesY)
+{
+    // Determine which tile we are processing.
+    int tileX = blockIdx.x;
+    int tileY = blockIdx.y;
+    int tileIndex = tileY * tilesX + tileX;
+    
+    // Determine tile boundaries in the image.
+    int startX = tileX * tileSize;
+    int startY = tileY * tileSize;
+    int endX   = min(startX + tileSize, width);
+    int endY   = min(startY + tileSize, height);
+    
+    // Create a shared histogram.
+    __shared__ int hist[HIST_SIZE];
+    // Initialize histogram (first HIST_SIZE threads do the work)
+    for (int i = threadIdx.x; i < HIST_SIZE; i += blockDim.x)
+    {
+        hist[i] = 0;
+    }
+
+    __syncthreads();
+    
+    // Accumulate histogram over the tile.
+    // Use a 2D loop over the tile pixels. (Threads cooperate.)
+    for (int y = startY + threadIdx.y; y < endY; y += blockDim.y)
+    {
+        for (int x = startX + threadIdx.x; x < endX; x += blockDim.x)
+        {
+            int idx = y * width + x;
+            unsigned char pix = input[idx];
+            atomicAdd(&hist[pix], 1);
+        }
+    }
+
+    __syncthreads();
+    
+    // Clip histogram and redistribute excess.
+    if (threadIdx.x == 0 && threadIdx.y == 0)
+    {
+        int totalExcess = 0;
+        for (int i = 0; i < HIST_SIZE; i++)
+        {
+            int excess = hist[i] - clipLimit;
+            if (excess > 0)
+            {
+                hist[i] = clipLimit;
+                totalExcess += excess;
+            }
+        }
+        // Evenly redistribute the excess counts.
+        int distribute = totalExcess / HIST_SIZE;
+        for (int i = 0; i < HIST_SIZE; i++)
+        {
+            hist[i] += distribute;
+        }
+    }
+    __syncthreads();
+    
+    // Compute CDF and build LUT.
+    // We compute the CDF on one thread (or a few threads if you wish to parallelize the scan).
+    __shared__ int cdf[HIST_SIZE];
+    if (threadIdx.x == 0 && threadIdx.y == 0)
+    {
+        cdf[0] = hist[0];
+        for (int i = 1; i < HIST_SIZE; i++)
+            cdf[i] = cdf[i - 1] + hist[i];
+        
+        // The minimum nonzero CDF value.
+        int cdfMin = cdf[0];
+        // Number of pixels in this tile.
+        int numPixels = (endX - startX) * (endY - startY);
+        
+        // Build LUT: map each gray level into [0, 255].
+        for (int i = 0; i < HIST_SIZE; i++)
+        {
+            // Avoid division by zero.
+            tileLUT[tileIndex * HIST_SIZE + i] = 255- (unsigned char)(((cdf[i] - cdfMin) * 255) / max(numPixels - cdfMin, 1));
+        }
+    }
+}
 
 
 // This kernel is launched with one block per tile.

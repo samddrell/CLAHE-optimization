@@ -2,15 +2,6 @@
 /*
     Copyright (C) 2025  MetaVi Labs Inc.
 
-    This source listing is licensed to ibidi GmbH for use in creating controlling
-    software for ibidi produced microscopes. This license is a component of a broader
-    agreement (not presented here) between ibidi GmbH and MetaVi Labs Inc.
-
-    This license grants rights for derivative works and improvements limited to microscope components
-    including Auto Focus and basic image enhancement. This license excludes ibidi from creating advanced image analysis
-    based on this software. For example, ibidi may not use this source code to create its own image
-    processing programs for cell segmentation, cell identification, or advanced features which rely on
-    cell segmentation or identification.
 */
 
 #ifndef CLAHE_H
