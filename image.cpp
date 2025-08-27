@@ -38,24 +38,9 @@
 #define strncasecmp  strnicmp
 #endif
 
-// NOTE: Control F to find all QUESTION's. These should be corrected (if applicable) and removed before the next release.
-
-
-// #define STB_IMAGE_WRITE_IMPLEMENTATION
-// #define STBI_MSC_SECURE_CRT
-// #include "stb_image_write.h"
-
-///////////////////////////////////////////////////////////////////////
-// QUESTION:
-// The following two functions and structs are custom error handlers
-// for JPEG. Should they be in a separate file? Should they be member
-// Functions of the Image class? 
-///////////////////////////////////////////////////////////////////////
-
 
 ///////////////////////////////////////////////////////////////////////
 // Custom error handler for JPEG
-// QUESTION Should this be in a separate file?
 ///////////////////////////////////////////////////////////////////////
 struct custom_error_mgr {
     jpeg_error_mgr pub;       // "Inherit" base JPEG error manager
