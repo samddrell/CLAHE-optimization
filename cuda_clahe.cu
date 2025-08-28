@@ -35,49 +35,200 @@ namespace Cuda
 #define HIST_SIZE 256
 
 // ----------------------------------------------------------------------------
-// Device Kernels Declarations (assumed to be implemented elsewhere)
+// Device Kernels Declarations
 // ----------------------------------------------------------------------------
+/**
+ * @brief Baseline CLAHE LUT builder for one tile per block (shared histogram + atomics).
+ *
+ * Builds a 256-bin histogram in shared memory for the block's tile using shared-memory atomics,
+ * clips to @p clipLimit, redistributes excess uniformly, computes the CDF, and writes a 256-entry
+ * LUT for the tile.
+ *
+ * @details
+ * - One block == one tile. Threads cooperatively iterate tile pixels.
+ * - Uses shared-memory atomics on a single histogram array -> can serialize on hot bins.
+ * - CDF + LUT generation done by a single thread (cheap for 256 bins).
+ * - NOTE: The original version used an inverted mapping (255 - mapped_value). Keep mapping
+ *   consistent across variants to avoid “inverted” appearance differences.
+ *
+ * @param input     Pointer to grayscale image (width*height bytes).
+ * @param width     Image width in pixels.
+ * @param height    Image height in pixels.
+ * @param tileSize  Tile size in pixels (tileSize x tileSize).
+ * @param clipLimit Per-bin clip limit for CLAHE (counts).
+ * @param tileLUT   Output LUT buffer [tilesX * tilesY * 256].
+ * @param tilesX    Number of tiles along X = ceil(width / tileSize).
+ * @param tilesY    Number of tiles along Y = ceil(height / tileSize).
+ *
+ * @note Launch: dim3 grid(tilesX, tilesY), dim3 block(16,16) (or similar).
+ * @note Shared memory: ~256 * sizeof(int) for histogram (+ optional for CDF).
+ */
 __global__ void originalComputeTileLUT(const unsigned char* input, int width, int height,
-                               int tileSize, int clipLimit,
-                               unsigned char* tileLUT,
-                               int tilesX, int tilesY);
+                                       int tileSize, int clipLimit,
+                                       unsigned char* tileLUT,
+                                       int tilesX, int tilesY);
 
-__global__ void computeTileLUT(const unsigned char* __restrict__ input, 
+/**
+ * @brief Baseline CLAHE LUT builder with aliasing hints (__restrict__) for better codegen.
+ *
+ * Same algorithm as originalComputeTileLUT but with __restrict__ on pointer parameters to help
+ * the compiler use the read-only path and reorder memory ops safely.
+ *
+ * @details
+ * - Often yields small speedups on embedded and desktop GPUs.
+ * - Algorithmic behavior identical to baseline (be consistent with LUT inversion choice).
+ *
+ * @see originalComputeTileLUT
+ */
+__global__ void computeTileLUT(const unsigned char* __restrict__ input,
                                int width, int height,
                                int tileSize, int clipLimit,
                                unsigned char* __restrict__ tileLUT,
                                int tilesX, int tilesY);
-
+        
+/**
+ * @brief Per-warp histograms in shared memory + reduction (reduces atomic contention).
+ *
+ * Each warp updates its own 256-bin histogram in shared memory (no inter-warp conflicts).
+ * Afterward, all warps reduce into a final histogram, then clip/redistribute and build the LUT.
+ *
+ * @details
+ * - Great when many threads hit the same bins (contentious histograms).
+ * - Shared memory usage = WARPS_PER_BLOCK * 256 * 4B (+ 256 * 4B final) -> may reduce occupancy.
+ * - Includes a strided zeroing pass and a shared-memory reduction step.
+ *
+ * @param ... (same as baseline)
+ *
+ * @note Launch: one tile per block; blockDim.x * blockDim.y must be a multiple of 32.
+ * @note Dynamic shared memory: (WARPS * 256 + 256) * sizeof(unsigned int).
+ * @warning Too much shared memory can lower active blocks/SM and hurt performance on Jetsons.
+ */
 __global__ void fasterComputeTileLUT_opt(const unsigned char* __restrict__ input,
-                                   int width, int height,
-                                   int tileSize, int clipLimit,
-                                   unsigned char* __restrict__ tileLUT,
-                                   int tilesX, int tilesY);
+                                         int width, int height,
+                                         int tileSize, int clipLimit,
+                                         unsigned char* __restrict__ tileLUT,
+                                         int tilesX, int tilesY);
 
-__global__ void applyCLAHE(const unsigned char* __restrict__ input, 
-                           unsigned char* __restrict__ output,
-                           int width, int height, int tileSize,
-                           int tilesX, int tilesY,
-                           const unsigned char* __restrict__ tileLUT);
-
+/**
+ * @brief Warp-aggregated atomics histogram (aggregate identical values within a warp).
+ *
+ * Uses __match_any_sync to find threads in a warp that observed the same pixel value and performs
+ * a single atomicAdd per unique value per warp, reducing atomic traffic to the shared histogram.
+ * Then clips/redistributes and builds the LUT.
+ *
+ * @details
+ * - Big wins when local texture causes many lanes in a warp to see the same value.
+ * - Little benefit on random/noisy tiles (extra control/mask ops without fewer atomics).
+ * - Histogram is __align__(128) to reduce bank conflicts.
+ *
+ * @param ... (same as baseline)
+ *
+ * @note Requires sm_70+ for __match_any_sync (Volta or newer).
+ * @note Mapping in this kernel is the standard (non-inverted) CLAHE unless changed to match baseline.
+ */
 __global__ void test_A(const unsigned char* input,
                        int width, int height,
                        int tileSize, int clipLimit,
                        unsigned char* tileLUT,
                        int tilesX, int tilesY);
 
-__global__ void test_A_Modified_fast(const unsigned char*  input, 
+/**
+ * @brief Simplified fast path with shared atomics + visual-quality tweaks.
+ *
+ * Keeps simple shared-memory atomics for the histogram (often efficient on Jetsons),
+ * then applies two post-process adjustments when building the LUT:
+ *  1) Border-tile area scaling: normalizes partial tiles so borders behave like full tiles.
+ *  2) Brightness preservation & gentle identity blend: shifts output mean toward input mean
+ *     (+ optional brighten offset) and blends slightly toward identity to reduce halos.
+ *
+ * @details
+ * - Not “strict” CLAHE: adds controlled brightness/contrast tweaks for better visual consistency.
+ * - Fast, robust choice for embedded targets; minimal control overhead.
+ *
+ * @param ... (same as baseline)
+ *
+ * @note Tune @c brighten_abs and @c alpha to taste; set both to zero for pure CLAHE behavior.
+ * @note Mapping here is the standard (non-inverted) CLAHE unless deliberately inverted.
+ */
+__global__ void test_A_Modified_fast(const unsigned char*  input,
+                                     int width, int height,
+                                     int tileSize, int clipLimit,
+                                     unsigned char*  tileLUT,
+                                     int tilesX, int tilesY);
+
+/**
+ * @brief Vectorized global loads (uchar4) to improve memory throughput when aligned.
+ *
+ * Each thread processes 4 adjacent pixels along X using a single uchar4 load per iteration,
+ * then updates the shared histogram with 4 atomics. Falls back to scalar loads for the tail.
+ *
+ * @details
+ * - Can significantly reduce global load instructions and improve coalescing.
+ * - Alignment-sensitive: reinterpret_cast<const uchar4*> prefers 4-byte aligned pointers.
+ *   Consider adding an alignment prologue (scalar until aligned) for best results.
+ *
+ * @param ... (same as baseline)
+ *
+ * @note Combine with an alignment prologue like in hist_vec_warpagg for maximum benefit.
+ * @note Mapping here is standard (non-inverted) unless changed.
+ */
+__global__ void test_C(const unsigned char*  input,
                        int width, int height,
                        int tileSize, int clipLimit,
                        unsigned char*  tileLUT,
                        int tilesX, int tilesY);
 
-__global__ void test_C(const unsigned char*  input, 
-                       int width, int height,
-                       int tileSize, int clipLimit,
-                       unsigned char*  tileLUT,
-                       int tilesX, int tilesY);
+/**
+ * @brief Apply-stage kernel: bilinear blend of four neighboring tile LUTs for each pixel.
+ *
+ * For each output pixel (x,y), finds the surrounding 2x2 tiles, looks up the mapped value
+ * in each tile's LUT at input(x,y), and writes a bilinear interpolation of the four results.
+ *
+ * @details
+ * - One thread == one pixel; memory-bound.
+ * - Access pattern coalesces if blockDim.x is a multiple of 32 (row-major).
+ * - Uses centered-tiles convention (x/tileSize - 0.5f) to compute fractional tile coords.
+ * - Consider precomputing invTile = 1.0f/tileSize on host and replacing divisions.
+ * - Fast path ideas: split interior vs border kernel; optionally stage 4 LUTs in shared
+ *   when blocks align to tile cells; optionally vectorize I/O with uchar4 when width%4==0.
+ *
+ * @param input     Grayscale input image.
+ * @param output    Output image (CLAHE-applied).
+ * @param width     Image width.
+ * @param height    Image height.
+ * @param tileSize  Tile size used during LUT construction.
+ * @param tilesX    Number of tiles along X.
+ * @param tilesY    Number of tiles along Y.
+ * @param tileLUT   All tiles’ LUTs [tilesX * tilesY * 256].
+ *
+ * @note Launch: dim3 block(32,8) or (16,16); grid = ceil(width/block.x) x ceil(height/block.y).
+ * @note Border handling: clamps (tx,ty) so (tx+1,ty+1) is valid; an interior-only kernel can
+ *       remove clamps/branches for speed and handle borders in a second pass.
+ */
+__global__ void applyCLAHE(const unsigned char* __restrict__ input,
+                           unsigned char* __restrict__ output,
+                           int width, int height, int tileSize,
+                           int tilesX, int tilesY,
+                           const unsigned char* __restrict__ tileLUT);
 
+/**
+ * @brief Vectorized loads + warp-aggregated atomics + alignment prologue (hybrid fast path).
+ *
+ * Hybrid approach that:
+ *  - Scalars forward until 4-byte aligned,
+ *  - Uses uchar4 vectorized loads across the row,
+ *  - Applies warp aggregation (__match_any_sync) to reduce atomics for each byte of the vector.
+ * Then clips/redistributes and builds the LUT.
+ *
+ * @details
+ * - Often best on desktop GPUs (Ada/4090) where warp ops are cheap and bandwidth is high.
+ * - May be neutral/negative on some Jetsons if register pressure reduces occupancy.
+ *
+ * @param ... (same as baseline)
+ *
+ * @note Requires sm_70+ for __match_any_sync.
+ * @note Keep shared histogram __align__(128) to reduce bank conflicts.
+ */
 __global__ void hist_vec_warpagg(const unsigned char* __restrict__ input,
                                  int width, int height,
                                  int tileSize, int clipLimit,
@@ -197,16 +348,24 @@ int CLAHE_8u(unsigned char* __restrict__ input, unsigned char* __restrict__ outp
         return -1;
     }
 
+    cudaEventRecord(stop, 0); // Record the stop event
+    cudaEventSynchronize(stop); // Ensure the stop event has been recorded
+    float elapsedTime;
+    cudaEventElapsedTime(&elapsedTime, start, stop);
+    printf("Kernal 1 Elapsed time: %f ms\n", elapsedTime);
 
     // ----------------------------------------------------------------------------
     // Launch Kernel 2: applyCLAHE
     // ----------------------------------------------------------------------------
     // Process the entire image with one thread per pixel.
     // dim3 block(32, 32);
+
+    cudaEventRecord(start, 0); // Record the start event on the default stream
+
     dim3 block(16, 16);
     dim3 grid((width + block.x - 1) / block.x,
               (height + block.y - 1) / block.y);
-    applyCLAHE<<<grid, block>>>(d_input, d_output, width, height,
+    originalApplyCLAHE<<<grid, block>>>(d_input, d_output, width, height,
                                 tileSize, tilesX, tilesY, d_tileLUT);
     err = cudaGetLastError();
     if (err != cudaSuccess) {
@@ -245,9 +404,9 @@ int CLAHE_8u(unsigned char* __restrict__ input, unsigned char* __restrict__ outp
     // Launch some kernel or perform asynchronous operations here...
     cudaEventRecord(stop, 0); // Record the stop event
     cudaEventSynchronize(stop); // Ensure the stop event has been recorded
-    float elapsedTime;
+    elapsedTime = 0.0f;
     cudaEventElapsedTime(&elapsedTime, start, stop);
-    printf("CUDA Elapsed time: %f ms\n", elapsedTime);
+    printf("Kernal 2 Elapsed time: %f ms\n", elapsedTime);
     cudaEventDestroy(start);
     cudaEventDestroy(stop);
 

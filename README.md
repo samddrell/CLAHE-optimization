@@ -22,7 +22,7 @@ Contrast Limited Adaptive Histogram Equalization (CLAHE) accelerated with CUDA, 
 
 MetaVi Labs builds microscope software for cell tracking and analysis. As the software displays the images to the user, a series of corrections must be applied to the image. One crucial step in the correction process is contrast enhancement, to provide a clear image with dark cells that pop off of the light background. The contrast algorithm that MetaVi Labs has chosen to utilize is the CLAHE (Contrast-Limited Adaptive Histogram Equalization), which provides an even contrast across the image, with various inputs that allow the contrast and its application to be tuned. CLAHE boosts local contrast without over-amplifying noise.
 
-The Clahe algorithm was chosen for a variety of factors, but partly because the development team at MetaVi labs was able to build their own, proprietary, CLAHE algorithm that could be accelerated via CUDA hardware acceleration. A CUDA path enables near-interactive viewing on supported devices. This project seeks to answer the question: how much faster is MetaVi Lab's proprietary CUDA algorithm when compared to prebuilt, already-optimized, CLAHE algorithms that run on the CPU. In order to fully understand the application-time difference between the CPU and CUDA, the CLAHE algorithms were applied on multiple devices, demonstrating which devices would be most useful for this algorithm.
+The Clahe algorithm was chosen for a variety of factors, but partly because the development team at MetaVi labs was able to build their own, proprietary, CLAHE algorithm that could be accelerated via CUDA hardware acceleration. A CUDA path enables near-interactive viewing on supported devices. This project seeks to answer the question: how much faster is MetaVi Lab's proprietary CUDA algorithm when compared to prebuilt, already-optimized, CLAHE algorithms that run on the CPU. In order to fully understand the application-time difference between the CPU and CUDA, the CLAHE algorithms were applied on multiple devices, demonstrating which devices would be most useful for this algorithm. It ought to be noted that the CLAHE algorithm used in this test is not MetaVi's final production algorithm. Rather, the algorithm tested is the prototype program that was characterized as a proof-of-concept program.
 
 This project benchmarks a CUDA implementation of CLAHE to:
 
@@ -172,6 +172,8 @@ MetaVi's proprietary CUDA algorithm, however, is built on multithreading. The im
 
 _All optimizations below were prototype kernels generated/assisted with AI to explore directions—not drop-in production code. Several trade-offs and bugs were found (details below)._
 
+After learning that the proprietary CUDA CLAHE algorithm was actually slower than the OpenCV, CPU-driven, counterpart, a few changes were tried and measured to see if the proprietary algorithm's application speed could be increased. 
+
 ### Summary (% change vs. your baseline):
 
 - **Histogram Per Warp: −5.8%** (slower)
@@ -188,6 +190,35 @@ Better global load efficiency—but again a color inversion bug noted (alignment
 
 - **All three combined:** +5.4%
 Gains did not add linearly; register pressure, shared-mem usage, and control overhead can interact.
+
+### Thorough Summaries (Need Revision)
+
+Same algorithm as the baseline, but all image/LUT pointers are marked __restrict__ to promise no aliasing. This often lets the compiler issue more efficient read-only loads and slightly better scheduling. Expect modest speedups with identical output (assuming the same mapping convention).
+
+fasterComputeTileLUT_opt
+
+Uses one histogram per warp in shared memory (WARPS×256), so warps update private bins with far fewer conflicts; then it reduces per-warp histograms into a final 256-bin array before the usual clip + redistribute + CDF/LUT. This can cut atomic contention dramatically, but the extra shared memory and the reduction step can reduce occupancy and even hurt performance on memory-constrained devices if tiles aren’t very contentious.
+
+test_A
+
+Implements warp-aggregated atomics: threads in a warp first group identical pixel values using __match_any_sync, and only the leader lane performs a single atomicAdd with the group’s vote count. This slashes atomics when neighboring pixels repeat (typical natural images), but adds warp-wide mask/shuffle overhead and brings little benefit on random/noisy tiles. LUT build is the standard clip → CDF → LUT path.
+
+test_A_Modified_fast
+
+Keeps simple shared-mem atomics (often fastest on Jetsons) but adds two quality tweaks in the LUT step: (1) border-tile area scaling so partial tiles behave like full tiles (prevents border vignetting), and (2) optional brightness preservation (+ small identity blend) to keep mean brightness stable and reduce halos. Results look more consistent tile-to-tile; it’s not “pure” CLAHE unless those tweaks are disabled.
+
+test_C
+
+Accelerates memory access with vectorized loads (uchar4), so each thread processes 4 adjacent pixels per loop. This improves coalescing and cuts address arithmetic, then falls back to a short scalar tail. It’s alignment-sensitive—without a quick alignment prologue, misaligned uchar4 loads may underperform or be suboptimal on some GPUs. Otherwise the histogram and LUT steps are standard.
+
+applyCLAHE
+
+The apply stage: per pixel, find the surrounding 2×2 tiles, fetch the mapped values from each tile’s LUT at the input intensity, and write the bilinear interpolation. Work is embarrassingly parallel and largely memory-bound; keep accesses coalesced (blockDim.x multiple of 32), consider an interior-only fast path (no clamps) and optional shared-LUT staging when blocks align to tiles.
+
+hist_vec_warpagg
+
+A hybrid “kitchen-sink” fast path: first a short alignment prologue (scalar) to reach 4-byte alignment; then vectorized uchar4 loads for the main body; and for each byte, warp-aggregated atomics to minimize histogram updates. Finally clip → redistribute → CDF/LUT. Often best on desktop GPUs (e.g., Ada/4090) with high bandwidth and cheap warp ops; can be neutral or negative on Jetsons if register pressure lowers occupancy.
+
 
 ### Why combined can be worse than parts
 

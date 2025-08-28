@@ -28,7 +28,8 @@ int main()
     Image extraBigImage(bigImage);
     // std::string ouFilePath1 = "normal_clahe_4_16.png";
     // std::string ouFilePath1 = "test_A_4_16.png";
-    std::string outFilePath1 = "new_normal_4_16.png";
+    std::string outFilePath1 = "originalComputeTileLUT_with_originalApplyCLAHE.png";
+    // std::string outFilePath1 = "new_normal_4_16.png";
     std::string outFilePath2 = "big_clahe_4_16.png";
     std::string outFilePath3 = "extra_big_clahe_4_16.png";
     std::string outFilePath4 = "small_clahe_4_16.png";
@@ -86,7 +87,7 @@ int main()
 
     // CANNY Edge Detection
     imgCANNY.cpuCANNY();
-    imgCANNY.SaveFile(outFilePathCANNY,100);
+    // imgCANNY.SaveFile(outFilePathCANNY,100);
 
     // Image cannyImg;
     // if (!(cannyImg.OpenFile(inFilePathSmall))) 
