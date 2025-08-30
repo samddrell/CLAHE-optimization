@@ -133,30 +133,6 @@ __global__ void test_A(const unsigned char* input,
                        int tilesX, int tilesY);
 
 /**
- * @brief Simplified fast path with shared atomics + visual-quality tweaks.
- *
- * Keeps simple shared-memory atomics for the histogram (often efficient on Jetsons),
- * then applies two post-process adjustments when building the LUT:
- *  1) Border-tile area scaling: normalizes partial tiles so borders behave like full tiles.
- *  2) Brightness preservation & gentle identity blend: shifts output mean toward input mean
- *     (+ optional brighten offset) and blends slightly toward identity to reduce halos.
- *
- * @details
- * - Not “strict” CLAHE: adds controlled brightness/contrast tweaks for better visual consistency.
- * - Fast, robust choice for embedded targets; minimal control overhead.
- *
- * @param ... (same as baseline)
- *
- * @note Tune @c brighten_abs and @c alpha to taste; set both to zero for pure CLAHE behavior.
- * @note Mapping here is the standard (non-inverted) CLAHE unless deliberately inverted.
- */
-__global__ void test_A_Modified_fast(const unsigned char*  input,
-                                     int width, int height,
-                                     int tileSize, int clipLimit,
-                                     unsigned char*  tileLUT,
-                                     int tilesX, int tilesY);
-
-/**
  * @brief Vectorized global loads (uchar4) to improve memory throughput when aligned.
  *
  * Each thread processes 4 adjacent pixels along X using a single uchar4 load per iteration,
@@ -177,6 +153,30 @@ __global__ void test_C(const unsigned char*  input,
                        int tileSize, int clipLimit,
                        unsigned char*  tileLUT,
                        int tilesX, int tilesY);
+
+/**
+ * @brief Vectorized loads + warp-aggregated atomics + alignment prologue (hybrid fast path).
+ *
+ * Hybrid approach that:
+ *  - Scalars forward until 4-byte aligned,
+ *  - Uses uchar4 vectorized loads across the row,
+ *  - Applies warp aggregation (__match_any_sync) to reduce atomics for each byte of the vector.
+ * Then clips/redistributes and builds the LUT.
+ *
+ * @details
+ * - Often best on desktop GPUs (Ada/4090) where warp ops are cheap and bandwidth is high.
+ * - May be neutral/negative on some Jetsons if register pressure reduces occupancy.
+ *
+ * @param ... (same as baseline)
+ *
+ * @note Requires sm_70+ for __match_any_sync.
+ * @note Keep shared histogram __align__(128) to reduce bank conflicts.
+ */
+__global__ void hist_vec_warpagg(const unsigned char* __restrict__ input,
+                                 int width, int height,
+                                 int tileSize, int clipLimit,
+                                 unsigned char* __restrict__ tileLUT,
+                                 int tilesX, int tilesY);
 
 /**
  * @brief Apply-stage kernel: bilinear blend of four neighboring tile LUTs for each pixel.
@@ -210,30 +210,6 @@ __global__ void applyCLAHE(const unsigned char* __restrict__ input,
                            int width, int height, int tileSize,
                            int tilesX, int tilesY,
                            const unsigned char* __restrict__ tileLUT);
-
-/**
- * @brief Vectorized loads + warp-aggregated atomics + alignment prologue (hybrid fast path).
- *
- * Hybrid approach that:
- *  - Scalars forward until 4-byte aligned,
- *  - Uses uchar4 vectorized loads across the row,
- *  - Applies warp aggregation (__match_any_sync) to reduce atomics for each byte of the vector.
- * Then clips/redistributes and builds the LUT.
- *
- * @details
- * - Often best on desktop GPUs (Ada/4090) where warp ops are cheap and bandwidth is high.
- * - May be neutral/negative on some Jetsons if register pressure reduces occupancy.
- *
- * @param ... (same as baseline)
- *
- * @note Requires sm_70+ for __match_any_sync.
- * @note Keep shared histogram __align__(128) to reduce bank conflicts.
- */
-__global__ void hist_vec_warpagg(const unsigned char* __restrict__ input,
-                                 int width, int height,
-                                 int tileSize, int clipLimit,
-                                 unsigned char* __restrict__ tileLUT,
-                                 int tilesX, int tilesY);
 
 
 // ----------------------------------------------------------------------------
@@ -654,108 +630,6 @@ __global__ void test_A(const unsigned char* input,
             if (cdfMin < 0 && cdf) cdfMin = cdf;
             tileLUT[tileIndex * HIST_SIZE + i] =
                 (unsigned char)(((cdf - cdfMin) * 255) / max(numPixels - cdfMin, 1));
-        }
-    }
-}
-
-
-// This kernel is launched with one block per tile.
-#ifndef HIST_SIZE
-#define HIST_SIZE 256
-#endif
-
-// Faster luminance-preserving CLAHE LUT builder.
-// Keep the same launch config you already use (one block per tile, e.g., 16x16).
-__global__ void test_A_Modified_fast(const unsigned char* __restrict__ input,
-                                     int width, int height,
-                                     int tileSize, int clipLimit,
-                                     unsigned char* __restrict__ tileLUT,
-                                     int tilesX, int tilesY)
-{
-    const int tileX = blockIdx.x, tileY = blockIdx.y;
-    const int tileIndex = tileY * tilesX + tileX;
-
-    const int startX = tileX * tileSize;
-    const int startY = tileY * tileSize;
-    const int endX   = min(startX + tileSize, width);
-    const int endY   = min(startY + tileSize, height);
-
-    __shared__ __align__(128) unsigned int hist[HIST_SIZE];
-
-    // Zero histogram with all threads
-    const int bx  = blockDim.x, by = blockDim.y;
-    const int tpb = bx * by;
-    const int tid = threadIdx.y * bx + threadIdx.x;
-    for (int i = tid; i < HIST_SIZE; i += tpb) hist[i] = 0u;
-    __syncthreads();
-
-    // Accumulate histogram (simple shared atomics have been best on your GPUs)
-    for (int y = startY + threadIdx.y; y < endY; y += by) {
-        int idx = y * width + startX + threadIdx.x;
-        for (int x = startX + threadIdx.x; x < endX; x += bx, ++idx) {
-            atomicAdd(&hist[input[idx]], 1u);
-        }
-    }
-    __syncthreads();
-
-    // Single-thread post processing per tile
-    if (tid == 0) {
-        // 1) Clip & redistribute (standard CLAHE)
-        int excess = 0;
-        for (int i = 0; i < HIST_SIZE; ++i) {
-            int v = (int)hist[i];
-            if (v > clipLimit) { excess += (v - clipLimit); v = clipLimit; }
-            hist[i] = (unsigned int)v;
-        }
-        const int distribute = excess / HIST_SIZE;
-        if (distribute) {
-            for (int i = 0; i < HIST_SIZE; ++i) hist[i] += (unsigned int)distribute;
-        }
-
-        // 2) Build CDF → provisional LUT (brightness-preserving, border fix)
-        const int fullTile = tileSize * tileSize;
-        const int tileArea = max((endX - startX) * (endY - startY), 1);
-        const float scale  = (float)fullTile / (float)tileArea;  // treat border tiles as full tiles
-
-        // meanIn = sum(i*hist[i]) / tileArea
-        unsigned long long sumIn = 0ull;
-        for (int i = 0; i < HIST_SIZE; ++i) sumIn += (unsigned long long)i * (unsigned long long)hist[i];
-        const float meanIn = (float)sumIn / (float)tileArea;
-
-        // Provisional LUT and meanOut in one pass
-        unsigned int cdf = 0;
-        int cdfMin = -1;
-        float meanOutNum = 0.0f;
-        unsigned char* dst = &tileLUT[tileIndex * HIST_SIZE];
-
-        for (int i = 0; i < HIST_SIZE; ++i) {
-            cdf += hist[i];
-            if (cdfMin < 0 && cdf) cdfMin = (int)cdf;
-
-            // Standard CLAHE mapping, with area scaling to avoid vignette
-            const float num = ((float)cdf - (float)cdfMin) * scale;
-            const float den = fmaxf((float)fullTile - (float)cdfMin * scale, 1.0f);
-            float v = 255.0f * (num / den);
-            v = fminf(255.0f, fmaxf(0.0f, v));
-            const unsigned char u8 = (unsigned char)(v + 0.5f);
-            dst[i] = u8;
-
-            meanOutNum += v * (float)hist[i];
-        }
-        const float meanOut = meanOutNum / (float)tileArea;
-
-        // 3) Brightness shift (+ a tiny identity blend to avoid halos)
-        //    (Set brighten_abs=0 and alpha=0 for pure CLAHE behavior.)
-        const float brighten_abs = 8.0f;  // try 5–12; or make this a parameter
-        const float alpha        = 0.10f; // 0..0.25 small identity mix; 0 = none
-
-        const float delta = (meanIn + brighten_abs) - meanOut;
-
-        for (int i = 0; i < HIST_SIZE; ++i) {
-            float v = (float)dst[i] + delta;              // brightness shift
-            v = (1.0f - alpha)*v + alpha*(float)i;       // gentle identity blend
-            v = fminf(255.0f, fmaxf(0.0f, v));           // clamp
-            dst[i] = (unsigned char)(v + 0.5f);
         }
     }
 }
