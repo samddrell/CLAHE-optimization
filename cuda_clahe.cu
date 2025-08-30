@@ -365,7 +365,7 @@ int CLAHE_8u(unsigned char* __restrict__ input, unsigned char* __restrict__ outp
     dim3 block(16, 16);
     dim3 grid((width + block.x - 1) / block.x,
               (height + block.y - 1) / block.y);
-    originalApplyCLAHE<<<grid, block>>>(d_input, d_output, width, height,
+    applyCLAHE<<<grid, block>>>(d_input, d_output, width, height,
                                 tileSize, tilesX, tilesY, d_tileLUT);
     err = cudaGetLastError();
     if (err != cudaSuccess) {

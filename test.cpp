@@ -65,7 +65,7 @@ int main()
     smallImage.CLAHE(4,16);
     // smallImage.SaveFile(ouFilePath4,100);
     img.CLAHE(4,16);
-    img.SaveFile(outFilePath1,100);
+    // img.SaveFile(outFilePath1,100);
     bigImage.CLAHE(4,16);
     extraBigImage.CLAHE(4,16);
     // extraBigImage.SaveFile(ouFilePath3,100);
