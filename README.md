@@ -174,7 +174,7 @@ _All optimizations below were prototype kernels generated/assisted with AI to ex
 
 After learning that the proprietary CUDA CLAHE algorithm was actually slower than the OpenCV, CPU-driven, counterpart, a few changes were tried and measured to see if the proprietary algorithm's application speed could be increased. This process began by measuring the time of each kernal seperately, and it was found that the CUDA application time (kernal 2) was much slower than the histogram clipping and LUT-building section (kernal 1). The changes made to each kernal are described below.
 
-### Summary of Kernal 1 Changes(% change vs. baseline):
+### Summary of Kernal 1 Changes (% change compared to baseline):
 
 - **__restrict__ qualifiers:** +4.8%
 Helps the compiler generate better memory code when aliasing is removed.
@@ -195,103 +195,134 @@ Gains did not add linearly; register pressure, shared-mem usage, and control ove
 
 **originalComputeTileLUT**
 
-Original
-
-Baseline CLAHE LUT builder: one tile per block, a single shared 256-bin histogram updated with shared-mem atomicAdd, followed by clip + redistribute, then a single-thread CDF → LUT pass. Simple and reliable, but heavy atomic contention on hot bins can limit speed. (If your historical version used 255 - (…) in the mapping, that inverts contrast—keep mapping consistent across variants.)
-
-
+This is the original kernal, designed by the development team at MetaVi Labs, to tile the image, build and clip a histogram for each tile, then compute the cdf for each histogram and combine the clipped histograms into a single Look-Up-Table (LUT). This kernal is simple and functions consistently well, but it has a few potential areas of imrpovement.
 
 **restrictComputeTileLUT**
 
-Original with restrict
+In this kernal, the implementation was not changed, and it is the same as the original (`originalComputeTileLUT`). The only difference is the parameters; the pointer parameters are qualified with the keyword `_restrict_`. This allows the compiler to build an executable that's more efficient by reducing the amount of additional memory checks that must be completed, since the compiler now knows that the restricted data will not be accessed by another location.
 
-Same algorithm as the baseline, but all image/LUT pointers are marked __restrict__ to promise no aliasing. This often lets the compiler issue more efficient read-only loads and slightly better scheduling. Expect modest speedups with identical output (assuming the same mapping convention).
 
 **histogramPerWarpComputeTileLUT**
 
-1 hist per warp
+This kernel version changes the way histograms are built for each tile. Instead of using a single shared histogram per block, it allocates one histogram per warp in shared memory. Each warp updates its own private histogram, which reduces contention caused by many threads trying to increment the same 256 counters at once. Then the histograms are combined into a final histogram, clipped, redistributed, and converted into a LUT. This method was suspected to improve performance by reducing atomic collisions, but its increased use of shared memory and performing extra steps hindered its performace, leading it to be slower than the original kernal design.
 
 **minimizedAtomicsComputeTileLUT**
 
-minimized atomics
-
-Implements warp-aggregated atomics: threads in a warp first group identical pixel values using __match_any_sync, and only the leader lane performs a single atomicAdd with the group’s vote count. This slashes atomics when neighboring pixels repeat (typical natural images), but adds warp-wide mask/shuffle overhead and brings little benefit on random/noisy tiles. LUT build is the standard clip → CDF → LUT path.
+This kernel improved histogram construction performance by using warp-aggregated atomics. Within each warp, threads that observe the same pixel value first form a group using `__match_any_sync`, and only  `atomicAdd` is issued. By collapsing many per-lane atomics into a single update per unique value, this approach lowers serialization on hot bins while keeping memory usage small. This technique is useful when neighboring pixels often repeat.
 
 **vectorizedComputeTileLUT**
 
-vectorized loads
-
-Accelerates memory access with vectorized loads (uchar4), so each thread processes 4 adjacent pixels per loop. This improves coalescing and cuts address arithmetic, then falls back to a short scalar tail. It’s alignment-sensitive—without a quick alignment prologue, misaligned uchar4 loads may underperform or be suboptimal on some GPUs. Otherwise the histogram and LUT steps are standard.
+This kernel improves memory access efficiency by using vectorized loads. Instead of reading one pixel at a time, each thread loads four adjacent pixels at once using the `uchar4` type, which reduces the number of memory transactions and improves coalescing. After processing each vector, the thread updates the shared histogram with four atomic operations. The remaining steps are performed just like in the baseline kernel. This approach can provide significant performance improvement by reducing global memory traffic.
 
 **combinedComputeTileLUT**
 
-restrict + minimized atomics + vectorized loads
+This kernel combines the successful optimization strategies into a single implementation. It begins by using `uchar4` vectorized loads so each thread processes four pixels per loop iteration. For histogram updates, it applies warp-aggregated atomics to collapse multiple matching atomic operations into a single update. The pointer parameters are also qualified with _restrict_, allowing the compiler to generate more efficient memory instructions. After histogram accumulation, the kernel follows the standard CLAHE steps seen in the first kernal. This combined approach was expected to have the potential for strong performance improvements, , but the increased register and shared memory usage reduced occupancy and diminished the benefits.
 
-A hybrid “kitchen-sink” fast path: first a short alignment prologue (scalar) to reach 4-byte alignment; then vectorized uchar4 loads for the main body; and for each byte, warp-aggregated atomics to minimize histogram updates. Finally clip → redistribute → CDF/LUT. Often best on desktop GPUs (e.g., Ada/4090) with high bandwidth and cheap warp ops; can be neutral or negative on Jetsons if register pressure lowers occupancy.
-
-**applyCLAHE**
-
-The apply stage: per pixel, find the surrounding 2×2 tiles, fetch the mapped values from each tile’s LUT at the input intensity, and write the bilinear interpolation. Work is embarrassingly parallel and largely memory-bound; keep accesses coalesced (blockDim.x multiple of 32), consider an interior-only fast path (no clamps) and optional shared-LUT staging when blocks align to tiles.
-
-### Why combined can be worse than parts
-
-- **Register pressure** increases with more logic → lower occupancy.
-
-- **Shared memory grows** (per-warp histograms) → fewer concurrent blocks.
-
-- **Instruction mix:** shuffle/match/reduction + vectorization + extra blending math may stall pipelines.
-
-- **Contention pattern:** some techniques reduce atomics in one phase but introduce reductions later.
-
-- **Bugs** (e.g., inverted mapping) can force extra fix-up passes.
+While this kernel attempted to combine all the best ideas, in practice the optimizations worked against one another. The extra logic increased register pressure, which lowered occupancy and reduced the number of active warps. At the same time, the larger shared memory footprint per block meant fewer blocks could run concurrently on each SM. The more complex instruction mix sometimes stalled execution pipelines instead of speeding them up. In addition, the contention pattern shifted: reducing atomics in one phase introduced new overhead in later reduction steps. Together, these factors explain why the combined kernel underperformed compared to its simpler, individually optimized counterparts.
 
 ---
 
 ## Results gallery
 
-_Replace with your actual images. Keep originals and processed side-by-sides consistent in size and naming._
+### Histogram Per Warp
 
-_docs/images/
-├─ input/
-│  ├─ sample1.png
-│  └─ sample2.png
-├─ opencv_clahe/
-│  ├─ sample1.png
-│  └─ sample2.png
-└─ cuda_clahe/
-   ├─ sample1_baseline.png
-   ├─ sample1_opt_minAtomics.png
-   └─ sample1_opt_vecLoads.png_
+| Trial               | 3300x2200 | 4096x3000 | 8192x6000 | 16384x12000 |                            |
+| ------------------- | --------- | --------- | --------- | ----------- | -------------------------- |
+| 1                   | 9.076     | 16.033    | 53.134    | 221.34      |                            |
+| 2                   | 8.966     | 13.631    | 53.759    | 209.071     |                            |
+| 3                   | 8.928     | 13.369    | 52.612    | 207.121     |                            |
+| 4                   | 11.7      | 14.9      | 52.64     | 216.043     |                            |
+| 5                   | 9.394     | 12.77     | 52.348    | 218.918     |                            |
+| 6                   | 9.451     | 13.621    | 54.46     | 209.75      |                            |
+| 7                   | 10.466    | 14.948    | 53.437    | 213.95      |                            |
+| 8                   | 9.952     | 14.374    | 52.124    | 207.079     |                            |
+| 9                   | 18.882    | 13.81     | 53.178    | 210.407     |                            |
+| 10                  | 9.49      | 13.227    | 53.525    | 209.372     |                            |
+| **AVG**             | 10.6305   | 14.0683   | 53.1217   | 212.3051    |                            |
+| **Improvement (%)** | -11.61    | -7.55     | -2.08     | -1.78       
+
+**Average Improvement**: -5.76 %
+
+### Qualifying char\* with **restrict**
+
+| Trial               | 3300x2200 | 4096x3000 | 8192x6000 | 16384x12000 |                           |
+| ------------------- | --------- | --------- | --------- | ----------- | ------------------------- |
+| 1                   | 8.615     | 11.141    | 45.981    | 185.708     |                           |
+| 2                   | 9.687     | 13.134    | 48.348    | 185.052     |                           |
+| 3                   | 15.282    | 11.473    | 45.777    | 192.764     |                           |
+| 4                   | 9.338     | 12.899    | 50.803    | 194.683     |                           |
+| 5                   | 9.339     | 12.343    | 51.738    | 205.007     |                           |
+| 6                   | 8.142     | 11.330    | 46.546    | 186.226     |                           |
+| 7                   | 9.689     | 13.295    | 47.802    | 184.431     |                           |
+| 8                   | 9.444     | 12.920    | 46.281    | 189.108     |                           |
+| 9                   | 11.261    | 13.204    | 46.045    | 186.709     |                           |
+| 10                  | 8.227     | 11.475    | 47.029    | 187.859     |                           |
+| **AVG**             | 9.902     | 12.322    | 47.635    | 189.755     |                           |
+| **Improvement (%)** | -3.97     | 5.80      | 8.46      | 9.03    
 
 
-**Example markdown:**
+**Average Improvement**: 4.83 %
 
-**Sample 1**
-| Input | OpenCV CLAHE (CPU) | CUDA CLAHE (baseline) | CUDA (vectorized+warp agg) |
-|------:|:-------------------:|:---------------------:|:---------------------------:|
-| ![in](docs/images/input/sample1.png) | ![cpu](docs/images/opencv_clahe/sample1.png) | ![cuda](docs/images/cuda_clahe/sample1_baseline.png) | ![opt](docs/images/cuda_clahe/sample1_opt_vecLoads.png) |
 
----
+### Minimizing Atomics
 
-## Reproducing measurements
+| Trial               | 3300x2200 | 4096x3000 | 8192x6000 | 16384x12000 |                            |
+| ------------------- | --------- | --------- | --------- | ----------- | -------------------------- |
+| 1                   | 8.837     | 13.679    | 44.914    | 179.260     |                            |
+| 2                   | 8.198     | 11.673    | 45.691    | 174.498     |                            |
+| 3                   | 7.782     | 10.730    | 43.654    | 172.281     |                            |
+| 4                   | 8.640     | 11.465    | 43.019    | 169.872     |                            |
+| 5                   | 10.607    | 11.559    | 43.383    | 169.906     |                            |
+| 6                   | 9.004     | 12.708    | 51.142    | 196.639     |                            |
+| 7                   | 8.520     | 11.016    | 43.255    | 176.060     |                            |
+| 8                   | 8.575     | 11.633    | 45.083    | 180.100     |                            |
+| 9                   | 8.445     | 11.812    | 44.134    | 175.987     |                            |
+| 10                  | 8.773     | 10.981    | 43.554    | 174.956     |                            |
+| **AVG**             | 8.738     | 11.726    | 44.783    | 176.956     |                            |
+| **Improvement (%)** | 8.26      | 10.36     | 13.94     | 15.17      
 
-- Build as above (prefer -DCMAKE_BUILD_TYPE=Release).
 
-- Run ./test multiple times per device. Each run prints four CUDA times (ms) and four CPU times (µs).
+**Average Improvement**: 11.93 %
 
-- Collect logs and parse into CSV (one row per trial). Keep image size, tile size, and clip limit fixed during a batch.
 
-- Report mean ± stddev per device/setting.
-(Tip: record GPU clocks/power mode on Jetsons.)
+### Vectorized Loads
 
-## What we time
+| Trial               | 3300x2200 | 4096x3000 | 8192x6000 | 16384x12000 |                            |
+| ------------------- | --------- | --------- | --------- | ----------- | -------------------------- |
+| 1                   | 8.598     | 11.594    | 42.972    | 175.103     |                            |
+| 2                   | 8.451     | 11.192    | 47.911    | 171.274     |                            |
+| 3                   | 9.405     | 11.505    | 43.283    | 175.607     |                            |
+| 4                   | 9.022     | 10.472    | 47.685    | 193.843     |                            |
+| 5                   | 8.771     | 12.141    | 43.637    | 181.924     |                            |
+| 6                   | 9.405     | 11.552    | 45.380    | 178.871     |                            |
+| 7                   | 9.119     | 11.932    | 44.371    | 175.115     |                            |
+| 8                   | 8.900     | 12.212    | 44.199    | 174.446     |                            |
+| 9                   | 8.950     | 11.722    | 44.809    | 186.377     |                            |
+| 10                  | 10.143    | 11.390    | 42.531    | 168.602     |                            |
+| **AVG**             | 9.076     | 11.571    | 44.678    | 178.116     |                            |
+| **Improvement (%)** | 4.70      | 11.54     | 14.14     | 14.61       
 
-- CUDA: kernel timing via cudaEventRecord around the CLAHE kernel sections.
+**Average Improvement**: 11.25 %
 
-- CPU: std::chrono::high_resolution_clock around OpenCV’s clahe->apply().
 
-- If you change what’s inside the timing scope (e.g., include H2D/D2H copies), note that clearly in the results.
+### Restricted Pointers + Vectorized Loads + Minimized Atomics
 
+| Trial               | 3300x2200 | 4096x3000 | 8192x6000 | 16384x12000 |                           |
+| ------------------- | --------- | --------- | --------- | ----------- | ------------------------- |
+| 1                   | 9.422     | 11.650    | 46.752    | 180.426     |                           |
+| 2                   | 9.168     | 12.175    | 45.649    | 192.152     |                           |
+| 3                   | 9.730     | 12.872    | 49.401    | 191.508     |                           |
+| 4                   | 9.728     | 13.243    | 47.876    | 195.494     |                           |
+| 5                   | 10.156    | 13.749    | 53.488    | 199.845     |                           |
+| 6                   | 9.716     | 11.890    | 44.719    | 204.381     |                           |
+| 7                   | 8.913     | 11.429    | 44.156    | 177.754     |                           |
+| 8                   | 11.252    | 11.377    | 45.919    | 188.989     |                           |
+| 9                   | 9.139     | 12.177    | 44.378    | 180.852     |                           |
+| 10                  | 10.036    | 12.783    | 45.267    | 207.676     |                           |
+| **AVG**             | 9.726     | 12.335    | 46.761    | 191.908     |                           |
+| **Improvement (%)** | -2.12     | 5.71      | 10.14     | 7.99        
+
+**Average Improvement**: 5.43 %
 
 ___
 
@@ -311,9 +342,8 @@ ___
 
 ## License
 
-Source files contain license headers describing usage restrictions (MetaVi Labs ↔ ibidi GmbH).
+Source files contain license headers describing usage restrictions (MetaVi Labs).
 
-_If you add a LICENSE file, reference it here. Otherwise, keep code headers authoritative._
 
 ___
 
