@@ -6,12 +6,24 @@
 
 #include "image.h"
 
+#include <filesystem>
+namespace fs = std::filesystem;
+
+fs::path testDir =
+#ifdef TEST_DATA_DIR
+    fs::path(TEST_DATA_DIR);
+#else
+    fs::current_path(); // fallback
+#endif
+
+fs::path inFilePath      = testDir / "p_00000009.png";
+fs::path inFilePathSmall = testDir / "DSC04441.jpg";
+
+
 int main()
 {
     // Prepare CUDA CLAHE Images
     // Read in image data from a file
-    std::string inFilePath = "p_00000009.png"; // Change this to your image file path
-    std::string inFilePathSmall = "DSC04441.jpg";
     Image smallImage;
     if (!(smallImage.OpenFile(inFilePathSmall))) 
     {

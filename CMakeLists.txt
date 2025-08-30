@@ -71,6 +71,12 @@ add_executable(test
   cuda_clahe.cu
 )
 
+# Tell the program where test_images lives (absolute path baked in at compile time)
+target_compile_definitions(test PRIVATE
+  TEST_DATA_DIR="${CMAKE_SOURCE_DIR}/test_images"
+)
+
+
 # -------- Derive CUDA include/lib from nvcc path (no hard-coded version) --------
 get_filename_component(_CUDA_BIN_DIR "${CMAKE_CUDA_COMPILER}" DIRECTORY)
 get_filename_component(CUDA_ROOT "${_CUDA_BIN_DIR}/.." REALPATH)
