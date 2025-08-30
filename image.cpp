@@ -699,7 +699,6 @@ bool Image::SaveFile(std::string infilename,int quality)
     int szExtentionLength = szExtention.length();
     for (int i = 0; i < szExtentionLength; i++)
     {
-        std::cout << "I'm here!" << std::endl;
         szExtention[i] = std::tolower(szExtention[i]); // Convert to lowercase
     }
 
