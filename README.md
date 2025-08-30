@@ -90,7 +90,9 @@ make
 ./test
 ```
 
-The program loads images from `<repo>/test_images` and prints timing for CUDA and CPU paths.
+The program loads images from `<repo>/test_images`, applies CLAHE, and prints timing for CUDA and CPU paths. 
+
+**NOTE:** The test program applies an optimized CUDA CLAHE (along with the CPU CLAHE) that will be explained in Part 2 of this README.
 
 ---
 
