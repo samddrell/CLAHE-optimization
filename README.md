@@ -211,10 +211,6 @@ Uses one histogram per warp in shared memory (WARPS×256), so warps update priva
 
 Implements warp-aggregated atomics: threads in a warp first group identical pixel values using __match_any_sync, and only the leader lane performs a single atomicAdd with the group’s vote count. This slashes atomics when neighboring pixels repeat (typical natural images), but adds warp-wide mask/shuffle overhead and brings little benefit on random/noisy tiles. LUT build is the standard clip → CDF → LUT path.
 
-**test_A_Modified_fast**
-
-Keeps simple shared-mem atomics (often fastest on Jetsons) but adds two quality tweaks in the LUT step: (1) border-tile area scaling so partial tiles behave like full tiles (prevents border vignetting), and (2) optional brightness preservation (+ small identity blend) to keep mean brightness stable and reduce halos. Results look more consistent tile-to-tile; it’s not “pure” CLAHE unless those tweaks are disabled.
-
 **test_C**
 
 Accelerates memory access with vectorized loads (uchar4), so each thread processes 4 adjacent pixels per loop. This improves coalescing and cuts address arithmetic, then falls back to a short scalar tail. It’s alignment-sensitive—without a quick alignment prologue, misaligned uchar4 loads may underperform or be suboptimal on some GPUs. Otherwise the histogram and LUT steps are standard.
