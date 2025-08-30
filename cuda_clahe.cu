@@ -288,7 +288,7 @@ int CLAHE_8u(unsigned char* __restrict__ input, unsigned char* __restrict__ outp
     dim3 blockTile(16,16);                 // 256 threads = 8 warps
     dim3 gridTile(tilesX, tilesY);
 
-    originalComputeTileLUT<<<gridTile, blockTile>>>(d_input, width, height,
+    minimizedAtomicsComputeTileLUT<<<gridTile, blockTile>>>(d_input, width, height,
                                         tileSize, effectiveClipLimit,
                                         d_tileLUT, tilesX, tilesY);
 
