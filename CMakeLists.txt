@@ -34,19 +34,16 @@ set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CUDA_STANDARD 14)
 
+set(CMAKE_CUDA_ARCHITECTURES 87 89)
+
 # -------- GPU architecture selection (portable for 3.16) --------
-# Let users override at configure time: -DCUDA_ARCH_LIST="87" or "86;87" etc.
-# If empty, choose a sensible default per platform.
-set(CUDA_ARCH_LIST "" CACHE STRING "SM list (e.g. 72;75;86;87;89). Empty = auto.")
+# Let users override at configure time: -DCUDA_ARCH_LIST="87;89" etc.
+# If empty, choose a sensible default for your supported devices.
+set(CUDA_ARCH_LIST "" CACHE STRING "SM list (e.g. 87;89). Empty = auto.")
 
 if(NOT CUDA_ARCH_LIST)
-  if(CMAKE_SYSTEM_PROCESSOR MATCHES "aarch64|ARM64")
-    # Jetson default (Orin). Set to 72 manually if building on Xavier/TX2.
-    set(CUDA_ARCH_LIST "87")
-  else()
-    # Desktop default (Ampere). Override to 89 for RTX 4090 if your toolkit supports it.
-    set(CUDA_ARCH_LIST "86")
-  endif()
+  # Support Orin (Ampere, sm_87) and Ada (sm_89) by default
+  set(CUDA_ARCH_LIST "87;89")
 endif()
 
 # Apply arch flags: generate fatbin for each entry (CMake 3.16 path)
