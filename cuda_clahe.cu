@@ -383,6 +383,9 @@ int CLAHE_8u(unsigned char* __restrict__ input, unsigned char* __restrict__ outp
     // Return 0 on success.
     return 0;
 }
+////////////////////////////////////////////////////////////////////////////////////
+// Begin Kernal Definitions
+////////////////////////////////////////////////////////////////////////////////////
 
 // This kernel is launched with one block per tile.
 __global__ void originalComputeTileLUT(const unsigned char* input, int width, int height,
@@ -639,7 +642,7 @@ __global__ void histogramPerWarpComputeTileLUT(const unsigned char* __restrict__
             if (cdfMin < 0 && cdf) cdfMin = cdf;
             int numPixels = (endX - startX) * (endY - startY);
             // map into [0,255]
-            tileLUT[tileIndex * HIST_SIZE + i] =
+            tileLUT[tileIndex * HIST_SIZE + i] = 255 -
                 (unsigned char)(((cdf - cdfMin) * 255) / max(numPixels - cdfMin, 1));
         }
     }
@@ -710,7 +713,7 @@ __global__ void minimizedAtomicsComputeTileLUT(const unsigned char* input,
         for (int i = 0; i < HIST_SIZE; ++i) {
             cdf += hist[i];
             if (cdfMin < 0 && cdf) cdfMin = cdf;
-            tileLUT[tileIndex * HIST_SIZE + i] =
+            tileLUT[tileIndex * HIST_SIZE + i] = 255 -
                 (unsigned char)(((cdf - cdfMin) * 255) / max(numPixels - cdfMin, 1));
         }
     }
@@ -773,7 +776,7 @@ __global__ void vectorizedComputeTileLUT(const unsigned char*  input,
         for (int i = 0; i < HIST_SIZE; ++i) {
             cdf += hist[i];
             if (cdfMin < 0 && cdf) cdfMin = cdf;
-            tileLUT[tileIndex * HIST_SIZE + i] =
+            tileLUT[tileIndex * HIST_SIZE + i] = 255 -
                 (unsigned char)(((cdf - cdfMin) * 255) / max(numPixels - cdfMin, 1));
         }
     }
@@ -865,7 +868,7 @@ __global__ void combinedComputeTileLUT(const unsigned char* __restrict__ input,
         for (int i = 0; i < HIST_SIZE; ++i) {
             cdf += hist[i];
             if (cdfMin < 0 && cdf) cdfMin = cdf;
-            tileLUT[tileIndex * HIST_SIZE + i] =
+            tileLUT[tileIndex * HIST_SIZE + i] = 255 -
                 (unsigned char)(((cdf - cdfMin) * 255) / max(numPixels - cdfMin, 1));
         }
     }
