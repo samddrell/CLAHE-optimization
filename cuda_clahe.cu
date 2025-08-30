@@ -80,7 +80,7 @@ __global__ void originalComputeTileLUT(const unsigned char* input, int width, in
  *
  * @see originalComputeTileLUT
  */
-__global__ void computeTileLUT(const unsigned char* __restrict__ input,
+__global__ void restrictComputeTileLUT(const unsigned char* __restrict__ input,
                                int width, int height,
                                int tileSize, int clipLimit,
                                unsigned char* __restrict__ tileLUT,
@@ -103,7 +103,7 @@ __global__ void computeTileLUT(const unsigned char* __restrict__ input,
  * @note Dynamic shared memory: (WARPS * 256 + 256) * sizeof(unsigned int).
  * @warning Too much shared memory can lower active blocks/SM and hurt performance on Jetsons.
  */
-__global__ void fasterComputeTileLUT_opt(const unsigned char* __restrict__ input,
+__global__ void histogramPerWarpComputeTileLUT(const unsigned char* __restrict__ input,
                                          int width, int height,
                                          int tileSize, int clipLimit,
                                          unsigned char* __restrict__ tileLUT,
@@ -126,7 +126,7 @@ __global__ void fasterComputeTileLUT_opt(const unsigned char* __restrict__ input
  * @note Requires sm_70+ for __match_any_sync (Volta or newer).
  * @note Mapping in this kernel is the standard (non-inverted) CLAHE unless changed to match baseline.
  */
-__global__ void test_A(const unsigned char* input,
+__global__ void minimizedAtomicsComputeTileLUT(const unsigned char* input,
                        int width, int height,
                        int tileSize, int clipLimit,
                        unsigned char* tileLUT,
@@ -145,10 +145,10 @@ __global__ void test_A(const unsigned char* input,
  *
  * @param ... (same as baseline)
  *
- * @note Combine with an alignment prologue like in hist_vec_warpagg for maximum benefit.
+ * @note Combine with an alignment prologue like in combinedComputeTileLUT for maximum benefit.
  * @note Mapping here is standard (non-inverted) unless changed.
  */
-__global__ void test_C(const unsigned char*  input,
+__global__ void vectorizedComputeTileLUT(const unsigned char*  input,
                        int width, int height,
                        int tileSize, int clipLimit,
                        unsigned char*  tileLUT,
@@ -172,7 +172,7 @@ __global__ void test_C(const unsigned char*  input,
  * @note Requires sm_70+ for __match_any_sync.
  * @note Keep shared histogram __align__(128) to reduce bank conflicts.
  */
-__global__ void hist_vec_warpagg(const unsigned char* __restrict__ input,
+__global__ void combinedComputeTileLUT(const unsigned char* __restrict__ input,
                                  int width, int height,
                                  int tileSize, int clipLimit,
                                  unsigned char* __restrict__ tileLUT,
@@ -300,7 +300,7 @@ int CLAHE_8u(unsigned char* __restrict__ input, unsigned char* __restrict__ outp
     // size_t shmem = (warps * HIST_SIZE + HIST_SIZE) * sizeof(unsigned int);
     // //            ^ per-warp hist + final hist
 
-    // fasterComputeTileLUT_opt<<<gridTile, blockTile, shmem>>>(
+    // histogramPerWarpComputeTileLUT<<<gridTile, blockTile, shmem>>>(
     //     d_input, width, height, tileSize, effectiveClipLimit,
     //     d_tileLUT, tilesX, tilesY);
     // ----------------------------------------------------------------------------
@@ -478,7 +478,7 @@ __global__ void originalComputeTileLUT(const unsigned char* input, int width, in
 
 
 // This kernel is launched with one block per tile.
-__global__ void computeTileLUT(const unsigned char* __restrict__ input, 
+__global__ void restrictComputeTileLUT(const unsigned char* __restrict__ input, 
                                int width, int height,
                                int tileSize, int clipLimit,
                                unsigned char* __restrict__ tileLUT,
@@ -564,7 +564,95 @@ __global__ void computeTileLUT(const unsigned char* __restrict__ input,
     }
 }
 
-__global__ void test_A(const unsigned char* input,
+#ifndef HIST_SIZE
+#define HIST_SIZE 256
+#endif
+
+// One tile per block; blockDim.x * blockDim.y must be a multiple of 32
+__global__ void histogramPerWarpComputeTileLUT(const unsigned char* __restrict__ input,
+                                   int width, int height,
+                                   int tileSize, int clipLimit,
+                                   unsigned char* __restrict__ tileLUT,
+                                   int tilesX, int tilesY)
+{
+    // Which tile does this block handle?
+    const int tileX = blockIdx.x, tileY = blockIdx.y;
+    const int tileIndex = tileY * tilesX + tileX;
+
+    // Tile bounds
+    const int startX = tileX * tileSize;
+    const int startY = tileY * tileSize;
+    const int endX   = min(startX + tileSize, width);
+    const int endY   = min(startY + tileSize, height);
+
+    // Thread ids
+    const int tpb  = blockDim.x * blockDim.y;             // threads per block
+    const int tid  = threadIdx.y * blockDim.x + threadIdx.x;
+    const int warp = tid >> 5;                             // /32
+    const int WARPS_PER_BLOCK = tpb >> 5;
+
+    // Shared memory layout: [ warpHists (WARPS×256) | finalHist (256) ]
+    extern __shared__ unsigned int s[];
+    unsigned int* warpHists = s;                           // WARPS_PER_BLOCK * HIST_SIZE
+    unsigned int* finalHist = warpHists + WARPS_PER_BLOCK * HIST_SIZE;
+
+    // Zero all shared memory (use ALL threads, striding)
+    for (int i = tid; i < WARPS_PER_BLOCK * HIST_SIZE + HIST_SIZE; i += tpb)
+        s[i] = 0;
+    __syncthreads();
+
+    // Each warp updates its own histogram -> far fewer collisions
+    unsigned int* myHist = warpHists + warp * HIST_SIZE;
+
+    // Accumulate tile histogram
+    for (int y = startY + threadIdx.y; y < endY; y += blockDim.y) {
+        for (int x = startX + threadIdx.x; x < endX; x += blockDim.x) {
+            int idx = y * width + x;                      
+            unsigned char pix = input[idx];
+            atomicAdd(&myHist[pix], 1u);
+        }
+    }
+    __syncthreads();
+
+    // Reduce per-warp histograms -> finalHist
+    for (int bin = tid; bin < HIST_SIZE; bin += tpb) {
+        unsigned int sum = 0;
+        #pragma unroll
+        for (int w = 0; w < WARPS_PER_BLOCK; ++w)
+            sum += warpHists[w * HIST_SIZE + bin];
+        finalHist[bin] = sum;
+    }
+    __syncthreads();
+
+    // Clip + redistribute + CDF + LUT (single thread; cheap for 256 bins)
+    if (tid == 0) {
+        int totalExcess = 0;
+        for (int i = 0; i < HIST_SIZE; ++i) {
+            int v = (int)finalHist[i];
+            if (v > clipLimit) {
+                totalExcess += (v - clipLimit);
+                finalHist[i] = clipLimit;
+            }
+        }
+        const int distribute = totalExcess / HIST_SIZE;
+        for (int i = 0; i < HIST_SIZE; ++i)
+            finalHist[i] += distribute;
+
+        // CDF
+        int cdf = 0, cdfMin = -1;
+        for (int i = 0; i < HIST_SIZE; ++i) {
+            cdf += finalHist[i];
+            if (cdfMin < 0 && cdf) cdfMin = cdf;
+            int numPixels = (endX - startX) * (endY - startY);
+            // map into [0,255]
+            tileLUT[tileIndex * HIST_SIZE + i] =
+                (unsigned char)(((cdf - cdfMin) * 255) / max(numPixels - cdfMin, 1));
+        }
+    }
+}
+
+
+__global__ void minimizedAtomicsComputeTileLUT(const unsigned char* input,
                        int width, int height,
                        int tileSize, int clipLimit,
                        unsigned char* tileLUT,
@@ -634,7 +722,7 @@ __global__ void test_A(const unsigned char* input,
     }
 }
 
-__global__ void test_C(const unsigned char*  input, 
+__global__ void vectorizedComputeTileLUT(const unsigned char*  input, 
                        int width, int height,
                        int tileSize, int clipLimit,
                        unsigned char*  tileLUT,
@@ -702,7 +790,7 @@ __global__ void test_C(const unsigned char*  input,
 #endif
 
 // One tile per block. Works for sm_70+ (uses __match_any_sync).
-__global__ void hist_vec_warpagg(const unsigned char* __restrict__ input,
+__global__ void combinedComputeTileLUT(const unsigned char* __restrict__ input,
                                  int width, int height,
                                  int tileSize, int clipLimit,
                                  unsigned char* __restrict__ tileLUT,
@@ -788,95 +876,6 @@ __global__ void hist_vec_warpagg(const unsigned char* __restrict__ input,
         }
     }
 }
-
-
-#ifndef HIST_SIZE
-#define HIST_SIZE 256
-#endif
-
-// One tile per block; blockDim.x * blockDim.y must be a multiple of 32
-__global__ void fasterComputeTileLUT_opt(const unsigned char* __restrict__ input,
-                                   int width, int height,
-                                   int tileSize, int clipLimit,
-                                   unsigned char* __restrict__ tileLUT,
-                                   int tilesX, int tilesY)
-{
-    // Which tile does this block handle?
-    const int tileX = blockIdx.x, tileY = blockIdx.y;
-    const int tileIndex = tileY * tilesX + tileX;
-
-    // Tile bounds
-    const int startX = tileX * tileSize;
-    const int startY = tileY * tileSize;
-    const int endX   = min(startX + tileSize, width);
-    const int endY   = min(startY + tileSize, height);
-
-    // Thread ids
-    const int tpb  = blockDim.x * blockDim.y;             // threads per block
-    const int tid  = threadIdx.y * blockDim.x + threadIdx.x;
-    const int warp = tid >> 5;                             // /32
-    const int WARPS_PER_BLOCK = tpb >> 5;
-
-    // Shared memory layout: [ warpHists (WARPS×256) | finalHist (256) ]
-    extern __shared__ unsigned int s[];
-    unsigned int* warpHists = s;                           // WARPS_PER_BLOCK * HIST_SIZE
-    unsigned int* finalHist = warpHists + WARPS_PER_BLOCK * HIST_SIZE;
-
-    // Zero all shared memory (use ALL threads, striding)
-    for (int i = tid; i < WARPS_PER_BLOCK * HIST_SIZE + HIST_SIZE; i += tpb)
-        s[i] = 0;
-    __syncthreads();
-
-    // Each warp updates its own histogram -> far fewer collisions
-    unsigned int* myHist = warpHists + warp * HIST_SIZE;
-
-    // Accumulate tile histogram
-    for (int y = startY + threadIdx.y; y < endY; y += blockDim.y) {
-        for (int x = startX + threadIdx.x; x < endX; x += blockDim.x) {
-            int idx = y * width + x;                      
-            unsigned char pix = input[idx];
-            atomicAdd(&myHist[pix], 1u);
-        }
-    }
-    __syncthreads();
-
-    // Reduce per-warp histograms -> finalHist
-    for (int bin = tid; bin < HIST_SIZE; bin += tpb) {
-        unsigned int sum = 0;
-        #pragma unroll
-        for (int w = 0; w < WARPS_PER_BLOCK; ++w)
-            sum += warpHists[w * HIST_SIZE + bin];
-        finalHist[bin] = sum;
-    }
-    __syncthreads();
-
-    // Clip + redistribute + CDF + LUT (single thread; cheap for 256 bins)
-    if (tid == 0) {
-        int totalExcess = 0;
-        for (int i = 0; i < HIST_SIZE; ++i) {
-            int v = (int)finalHist[i];
-            if (v > clipLimit) {
-                totalExcess += (v - clipLimit);
-                finalHist[i] = clipLimit;
-            }
-        }
-        const int distribute = totalExcess / HIST_SIZE;
-        for (int i = 0; i < HIST_SIZE; ++i)
-            finalHist[i] += distribute;
-
-        // CDF
-        int cdf = 0, cdfMin = -1;
-        for (int i = 0; i < HIST_SIZE; ++i) {
-            cdf += finalHist[i];
-            if (cdfMin < 0 && cdf) cdfMin = cdf;
-            int numPixels = (endX - startX) * (endY - startY);
-            // map into [0,255]
-            tileLUT[tileIndex * HIST_SIZE + i] =
-                (unsigned char)(((cdf - cdfMin) * 255) / max(numPixels - cdfMin, 1));
-        }
-    }
-}
-
 
 __global__ void applyCLAHE(const unsigned char* __restrict__ input, 
                            unsigned char* __restrict__ output,
