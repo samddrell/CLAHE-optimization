@@ -324,12 +324,6 @@ int CLAHE_8u(unsigned char* __restrict__ input, unsigned char* __restrict__ outp
         return -1;
     }
 
-    cudaEventRecord(stop, 0); // Record the stop event
-    cudaEventSynchronize(stop); // Ensure the stop event has been recorded
-    float elapsedTime;
-    cudaEventElapsedTime(&elapsedTime, start, stop);
-    printf("Kernal 1 Elapsed time: %f ms\n", elapsedTime);
-
     // ----------------------------------------------------------------------------
     // Launch Kernel 2: applyCLAHE
     // ----------------------------------------------------------------------------
@@ -380,7 +374,7 @@ int CLAHE_8u(unsigned char* __restrict__ input, unsigned char* __restrict__ outp
     // Launch some kernel or perform asynchronous operations here...
     cudaEventRecord(stop, 0); // Record the stop event
     cudaEventSynchronize(stop); // Ensure the stop event has been recorded
-    elapsedTime = 0.0f;
+    float elapsedTime;
     cudaEventElapsedTime(&elapsedTime, start, stop);
     printf("Kernal 2 Elapsed time: %f ms\n", elapsedTime);
     cudaEventDestroy(start);
