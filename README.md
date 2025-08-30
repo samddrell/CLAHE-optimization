@@ -63,27 +63,34 @@ _Canny Applied:_
 
 ## Build & run
 
-### Requirements
-- CUDA toolkit (matching your device)
-- CMake ≥ 3.16
-- A recent C++ compiler
-- OpenCV (core, imgproc, imgcodecs, highgui, videoio)
-- (Optional) libpng / libjpeg if your build uses them
+Absolutely — here’s an updated, drop-in **Build & Run** section that matches your CMake and the way your test images are wired in.
 
-### Configure & build
+---
+
+## Build & run
+
+### Requirements
+
+* CUDA Toolkit (nvcc) installed and on your PATH, or pass its path to CMake
+* CMake ≥ 3.16
+* A recent C++ compiler (C++17)
+* OpenCV (core, imgproc, imgcodecs, highgui, videoio)
+* (Optional) libpng / libjpeg (your CMake will pick them up via pkg-config)
+
+### Build
+
 ```bash
-# From repo root
-mkdir -p build && cd build
-cmake ..           # add -DCMAKE_BUILD_TYPE=Release for optimized builds
 cmake --build . -j
 ```
 
-### Run
-```bash
+### Compile and Run
 
+```bash
+make
 ./test
-# The binary prints four CUDA timings (in ms) and four CPU timings (in µs) per run.
 ```
+
+The program loads images from `<repo>/test_images` and prints timing for CUDA and CPU paths.
 
 ---
 
