@@ -63,12 +63,6 @@ _Canny Applied:_
 
 ## Build & run
 
-Absolutely — here’s an updated, drop-in **Build & Run** section that matches your CMake and the way your test images are wired in.
-
----
-
-## Build & run
-
 ### Requirements
 
 * CUDA Toolkit (nvcc) installed and on your PATH, or pass its path to CMake
